@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -238,7 +239,7 @@ const TG_CAPTION='__TT_BACKUP__';
 const S={
   tasks:null,categories:null,
   loading:true,
-  modal:null, // null | 'task' | 'settings' | 'manageCats' | 'catEdit' | 'pwd' | 'sync'
+  modal:null, // null | 'task' | 'settings' | 'manageCats' | 'catEdit' | 'pwd' | 'sync' | 'reminder'
   modalData:null,
   filter:'all',
   selectedCatId:'all',
@@ -741,12 +742,29 @@ function startBotPolling(){
 function startDeadlineReminder(){
   setInterval(async()=>{
     const now=new Date();
+    const dueNowTasks=[];
     for(const t of (S.tasks||[])){
       if(t.status==='done'||!t.deadline)continue;
       const cat=(S.categories||[]).find(c=>c.id===t.categoryId);
+      const mins=Math.round((new Date(t.deadline)-now)/60000);
+
+      // ── In-app popup: 15 min warning ──
+      if(mins>=13&&mins<=15&&!reminded[t.id+'_15']){
+        reminded[t.id+'_15']=1;
+        if(S.modal===null){
+          setState({modal:'reminder',modalData:{tasks:[{...t,cat,mins,type:'warn15'}]}},false);
+          render();
+        }
+      }
+      // ── In-app popup: deadline reached ──
+      if(mins>=-2&&mins<=2&&!reminded[t.id+'_0_app']){
+        reminded[t.id+'_0_app']=1;
+        dueNowTasks.push({...t,cat,mins,type:'due'});
+      }
+
+      // ── Telegram: 1 hour warning ──
       const tg=getCatTg(cat);
       if(!tg)continue;
-      const mins=Math.round((new Date(t.deadline)-now)/60000);
       if(mins>=55&&mins<=65&&!reminded[t.id+'_60']){
         reminded[t.id+'_60']=1;
         await tgCall(tg.token,'sendMessage',{chat_id:tg.chatId,parse_mode:'HTML',
@@ -759,6 +777,11 @@ function startDeadlineReminder(){
           reply_markup:buildTaskKeyboard(t.id,t.status,t.progress),
           text:'🚨 <b>ĐẾN DEADLINE!</b>\n\n🔖 <b>'+t.title+'</b>\n👤 '+(t.assignee||'Chưa gán')+'\n🗂 '+(cat?cat.icon+' '+cat.name:'')+'\n🕐 '+formatDate(t.deadline)+'\n📊 '+(t.progress||0)+'% · ⚡ Cập nhật ngay!'}).catch(()=>{});
       }
+    }
+    // Show combined popup for all tasks that hit deadline now
+    if(dueNowTasks.length>0){
+      setState({modal:'reminder',modalData:{tasks:dueNowTasks}},false);
+      render();
     }
   },60000);
 }
@@ -1037,6 +1060,7 @@ function render(){
   if(S.modal==='catEdit')renderCatEditModal();
   if(S.modal==='pwd')renderPwdModal();
   if(S.modal==='sync')renderSyncModal();
+  if(S.modal==='reminder')renderReminderModal();
 
   // ── Toast ──
   if(S.toast){
@@ -1498,6 +1522,89 @@ function renderSyncModal(){
       connectBtn,
     ]),
   ]);
+  showModal(modalEl);
+}
+
+// ─── Reminder Modal ───────────────────────────────────────────────────────────
+function renderReminderModal(){
+  const{tasks}=S.modalData||{tasks:[]};
+  if(!tasks||!tasks.length){setState({modal:null,modalData:null});return;}
+  const isDue=tasks.some(t=>t.type==='due');
+  const isWarn=tasks.some(t=>t.type==='warn15');
+
+  // Try browser notification
+  if(isDue&&'Notification' in window&&Notification.permission==='granted'){
+    tasks.filter(t=>t.type==='due').forEach(t=>{
+      new Notification('🚨 Đến deadline!',{body:t.title+(t.assignee?' — '+t.assignee:''),icon:'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🚨</text></svg>'});
+    });
+  }
+
+  const accentColor=isDue?'#DC2626':'#D97706';
+  const bgColor=isDue?'#FEF2F2':'#FFFBEB';
+  const borderColor=isDue?'#FECACA':'#FDE68A';
+  const icon=isDue?'🚨':'⏰';
+  const title=isDue?'ĐẾN DEADLINE!':'Sắp đến deadline — còn 15 phút!';
+
+  const taskCards=tasks.map(t=>{
+    const pct=t.progress||0;
+    const filled=Math.round(pct/10);
+    const progBar='█'.repeat(filled)+'░'.repeat(10-filled);
+    const catColor=t.cat?t.cat.color:'#6366f1';
+    return div({style:{background:'white',borderRadius:'var(--r12)',padding:'12px 14px',marginBottom:8,borderLeft:'3px solid '+catColor,border:'1px solid #e5e7eb',borderLeftColor:catColor}},[
+      div({style:{fontSize:13,fontWeight:700,color:'var(--text1)',marginBottom:6}},[t.title]),
+      div({style:{display:'flex',flexWrap:'wrap',gap:6,fontSize:11,color:'var(--text2)'}},[
+        t.assignee?span({style:{background:'#f3f4f6',padding:'2px 7px',borderRadius:4}},[' 👤 '+t.assignee]):null,
+        t.cat?span({style:{background:catColor+'15',color:catColor,padding:'2px 7px',borderRadius:4}},[t.cat.icon+' '+t.cat.name]):null,
+        span({style:{background:'#f3f4f6',padding:'2px 7px',borderRadius:4}},['🕐 '+formatDate(t.deadline)]),
+      ]),
+      div({style:{marginTop:8}},[
+        div({style:{display:'flex',alignItems:'center',gap:6}},[
+          div({style:{flex:1,height:5,background:'#e5e7eb',borderRadius:4,overflow:'hidden'}},[
+            div({style:{height:'100%',width:pct+'%',background:pct>=100?'#059669':pct>=60?'#2563EB':pct>=30?'#D97706':'#94A3B8',borderRadius:4}})
+          ]),
+          span({style:{fontSize:11,fontWeight:700,color:'var(--text2)',minWidth:32}},[pct+'%']),
+        ]),
+      ]),
+      div({style:{display:'flex',gap:6,marginTop:8}},[
+        btn({style:{flex:1,padding:'7px',borderRadius:'var(--r8)',border:'1.5px solid #e5e7eb',background:'white',fontSize:12,fontWeight:600,color:'var(--text2)'},onClick:()=>{setState({modal:null,modalData:null});openTaskModal(S.tasks.find(x=>x.id===t.id));}},[' ✏️ Cập nhật']),
+      ]),
+    ]);
+  });
+
+  const modalEl=div({className:'modal',style:{maxWidth:480}},[
+    // Header with pulsing icon
+    div({style:{textAlign:'center',padding:'4px 0 16px'}},[
+      div({style:{fontSize:48,marginBottom:8,animation:isDue?'pulse 1s ease infinite':'none'}},[icon]),
+      div({style:{fontSize:18,fontWeight:800,color:accentColor,letterSpacing:'-.02em'}},[title]),
+      div({style:{fontSize:12,color:'var(--text3)',marginTop:4}},[tasks.length+' công việc cần chú ý']),
+    ]),
+    // Task list
+    div({style:{background:bgColor,border:'1px solid '+borderColor,borderRadius:'var(--r12)',padding:12,marginBottom:12}},taskCards),
+    // Actions
+    div({style:{display:'flex',gap:8}},[
+      btn({className:'btn btn-secondary',style:{flex:1},onClick:()=>setState({modal:null,modalData:null})},['Đóng']),
+      isDue?btn({className:'btn btn-primary',style:{flex:1,background:accentColor},onClick:()=>{
+        // Open first task for quick update
+        const first=S.tasks.find(x=>x.id===tasks[0].id);
+        setState({modal:null,modalData:null});
+        if(first)openTaskModal(first);
+      }},['⚡ Cập nhật ngay']):null,
+    ]),
+  ]);
+
+  // Add pulse animation style if not already present
+  if(!document.getElementById('reminder-style')){
+    const style=document.createElement('style');
+    style.id='reminder-style';
+    style.textContent='@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.15)}}';
+    document.head.appendChild(style);
+  }
+
+  // Request notification permission on first deadline
+  if('Notification' in window&&Notification.permission==='default'){
+    Notification.requestPermission();
+  }
+
   showModal(modalEl);
 }
 
