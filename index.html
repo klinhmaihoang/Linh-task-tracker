@@ -574,10 +574,11 @@ async function pollPaymentBot(){
       // All pay_ callbacks (pay_sess_, pay_edit_, pay_del_, pay_approve etc.) pass through
 
       // ── Auto-capture member from any message ──
-      const pmsg=u.message;
+      // Also handle channel_post (Sepay bot may post as channel)
+      const pmsg=u.message||u.channel_post;
       if(pmsg&&String(pmsg.chat?.id)===String(cfg.chatId)){
-        if(pmsg.from&&pmsg.from.id)savePayMember(pmsg.from);
-        const ptxt=(pmsg.text||'').trim();
+        if(pmsg.from&&pmsg.from.id&&!pmsg.from.is_bot)savePayMember(pmsg.from);
+        const ptxt=(pmsg.text||pmsg.caption||'').trim();
         const userId=pmsg.from?String(pmsg.from.id):'';
         const userName=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'';
 
@@ -628,35 +629,43 @@ async function pollPaymentBot(){
         }
 
         // ── Sepay transaction parser ─────────────────────────────────────────────
-        // Detect forwarded Sepay messages (format: "--------- ID: XXXXXX ---------")
-        if(ptxt.includes('ID:')&&ptxt.includes('Tiền ra')&&ptxt.includes('Giao dịch lúc')){
-          // Parse Sepay format
+        // Format thực tế: "Tiền ra team ơi!\n- Số tiền: -50,000 đ\n- Tài khoản: 38692527 tại ACB\n- Nội dung CK: PTA4ZDU4 ...\n- Lúc: 2026-04-22 21:18:41"
+        const isSepay=(ptxt.toLowerCase().includes('tiền ra')&&ptxt.includes('Nội dung CK'))||(ptxt.includes('ID:')&&ptxt.includes('Tiền ra')&&ptxt.includes('Giao dịch lúc'));
+        if(isSepay){
           const getField=(text,label)=>{
-            const re=new RegExp(label+'[: ]+([^\\n]+)','i');
+            const re=new RegExp('[\\-\\s]*'+label+'[:\\s]+([^\\n]+)','i');
             const m=text.match(re);
             return m?m[1].trim():'';
           };
-          const tienRaRaw=getField(ptxt,'Tiền ra');
-          const tienRaNum=parseInt((tienRaRaw||'').replace(/[^0-9]/g,''))||0;
+          // Số tiền: "- Số tiền: -50,000 đ"
+          const soTienRaw=getField(ptxt,'Số tiền')||getField(ptxt,'Tiền ra');
+          const tienRaNum=parseInt((soTienRaw||'').replace(/[^0-9]/g,''))||0;
+          // Tài khoản: "- Tài khoản: 38692527 tại ACB"
+          const taiKhoanRaw=getField(ptxt,'Tài khoản');
+          const taiKhoanNo=(taiKhoanRaw||'').split(' ')[0].replace(/[^0-9]/g,'');
+          // Nội dung CK: "PTA4ZDU4 Khanh Linh-220426-..."
+          const noiDung=(getField(ptxt,'Nội dung CK')||getField(ptxt,'Nội dung thanh toán')||getField(ptxt,'Nội dung')||'').toLowerCase();
+          // Thời gian
+          const thoiGian=getField(ptxt,'Lúc')||getField(ptxt,'Giao dịch lúc')||getField(ptxt,'Thời gian');
 
           if(tienRaNum>0){
-            // Has outgoing transaction - try to match with approved payments
-            const noiDung=(getField(ptxt,'Nội dung thanh toán')||getField(ptxt,'Nội dung')||'').toLowerCase();
-            const taiKhoan=getField(ptxt,'Tài khoản chính').toLowerCase();
-            const thoiGian=getField(ptxt,'Giao dịch lúc');
-
+            // Đối chiếu với đề xuất approved — ưu tiên match theo mã đề xuất trong nội dung CK
             const allPays=getPayments();
             // Find matching approved payment
             const matchIdx=allPays.findIndex(p=>{
-              if(p.status!=='approved'&&p.status!=='awaiting_receipt')return false;
-              // Match by: amount, account number, or description keywords
+              if(p.status!=='approved'&&p.status!=='awaiting_receipt'&&p.status!=='pending')return false;
               const amountMatch=parseInt(p.amount||0)===tienRaNum;
-              const accountMatch=p.accountNo&&noiDung.includes(p.accountNo.toLowerCase().slice(-4));
-              const codeMatch=noiDung.includes(p.code.toLowerCase())||noiDung.includes((p.code||'').toLowerCase());
+              // Ưu tiên: mã đề xuất (VD: PTA4ZDU4) có trong nội dung CK
+              const codeMatch=noiDung.includes((p.code||'').toLowerCase());
+              // Số tài khoản khớp (so sánh toàn bộ hoặc 6 số cuối)
+              const acctMatch=taiKhoanNo&&p.accountNo&&(
+                p.accountNo===taiKhoanNo||
+                p.accountNo.slice(-6)===taiKhoanNo.slice(-6)
+              );
+              // Fallback: số tiền + từ khoá nội dung
               const descWords=(p.description||'').toLowerCase().split(' ').filter(w=>w.length>3);
               const descMatch=descWords.some(w=>noiDung.includes(w));
-              const nameMatch=p.accountName&&noiDung.includes(p.accountName.toLowerCase().replace(/ /g,'').slice(0,8));
-              return amountMatch||(accountMatch&&descMatch)||codeMatch||(amountMatch&&(nameMatch||descMatch));
+              return codeMatch||(acctMatch&&amountMatch)||( amountMatch&&descMatch);
             });
 
             if(matchIdx>=0){
