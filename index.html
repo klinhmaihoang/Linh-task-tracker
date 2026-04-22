@@ -574,14 +574,24 @@ async function pollPaymentBot(){
       // ── Auto-capture member from any message ──
       // Also handle channel_post (Sepay bot may post as channel)
       const pmsg=u.message||u.channel_post;
-      if(pmsg&&String(pmsg.chat?.id)===String(cfg.chatId)){
-        if(pmsg.from&&pmsg.from.id&&!pmsg.from.is_bot)savePayMember(pmsg.from);
-        const ptxt=(pmsg.text||pmsg.caption||'').trim();
+      if(pmsg){
+        const pmsgChatId=String(pmsg.chat?.id||'');
+        const isOurGroup=pmsgChatId===String(cfg.chatId);
+        // Detect Sepay format first — accept from ANY chat (Sepay có thể ở group khác)
+        const ptxtRaw=(pmsg.text||pmsg.caption||'').trim();
+        const looksLikeSepay=ptxtRaw.toLowerCase().includes('tiền ra')&&ptxtRaw.includes('Nội dung CK')&&ptxtRaw.includes('Số tiền');
+        if(!isOurGroup&&!looksLikeSepay){
+          // Không phải group mình, không phải Sepay → bỏ qua
+          const cq2=u.callback_query;
+          if(!cq2)continue;
+        }
+        if(pmsg.from&&pmsg.from.id&&!pmsg.from.is_bot&&isOurGroup)savePayMember(pmsg.from);
+        const ptxt=ptxtRaw;
         const userId=pmsg.from?String(pmsg.from.id):'';
         const userName=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'';
 
-        // ── Session / Conversation flow ──
-        const session=userId?getSession(userId):null;
+        // ── Session / Conversation flow — chỉ xử lý trong group chính ──
+        const session=isOurGroup&&userId?getSession(userId):null;
         if(session&&ptxt.toLowerCase()!=='hủy'&&ptxt.toLowerCase()!=='cancel'&&!ptxt.startsWith('/')){
           const handled=await handlePaySession(cfg.token,cfg.chatId,userId,userName,pmsg,ptxt,session);
           if(handled)continue;
@@ -605,12 +615,12 @@ async function pollPaymentBot(){
           const handled2=await handlePaySession(cfg.token,cfg.chatId,userId,userName,pmsg,ptxtNorm,fakeSession);
           if(handled2)continue;
         }
-        if(ptxt.toLowerCase()==='hủy'||ptxt.toLowerCase()==='cancel'){
+        if(isOurGroup&&(ptxt.toLowerCase()==='hủy'||ptxt.toLowerCase()==='cancel')){
           if(session){clearSession(userId);await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text:'❌ Đã hủy. Nhắn /payhelp để xem các lệnh.'}).catch(()=>{});}
           continue;
         }
 
-        if(ptxt==='/payhelp'||ptxt==='/start'){
+        if(isOurGroup&&(ptxt==='/payhelp'||ptxt==='/start')){
           const memberName=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'bạn';
           await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
             text:'👋 Xin chào <b>'+memberName+'</b>!\n\n💳 <b>Menu Thanh toán:</b>\n\n/payment — ➕ Tạo đề xuất mới\n/sua — ✏️ Sửa đề xuất\n/xoa — 🗑 Xóa đề xuất\n/paylist — 📋 Xem đề xuất chờ duyệt\n/members — 👥 Thành viên\n\n💡 Nhắn <b>hủy</b> bất cứ lúc nào để thoát'
