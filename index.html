@@ -555,6 +555,20 @@ async function notifyInvoiceImages(payment){
   }
 }
 
+
+const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbw49L3I37jiUE-dry4v4lBaEd8J860P9IALaWnuUBEJ6xP6aNMuM2H8lsVN1Hmvdk7ItQ/exec';
+
+async function syncToSheet(payment){
+  try{
+    await fetch(GOOGLE_SHEET_URL,{
+      method:'POST',
+      mode:'no-cors',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({payment})
+    });
+  }catch(e){console.warn('syncToSheet:',e.message);}
+}
+
 async function pollPaymentBot(){
   const cfg=getPayTgCfg();
   if(!cfg.token||!cfg.chatId)return;
@@ -694,6 +708,7 @@ async function pollPaymentBot(){
                 lastActionAt:new Date().toISOString()
               };
               savePayments(allPays.map((p,i)=>i===matchIdx?updated:p));
+              syncToSheet(updated).catch(()=>{});
 
               // Thông báo hoàn tất
               const bank3=VIET_BANKS.find(b=>b.code===matched.bankCode);
@@ -1065,6 +1080,7 @@ async function pollPaymentBot(){
         accountantTg:payments[pidx].accountantTg||'',
         lastActionAt:new Date().toISOString(),lastActionBy:presserName};
       savePayments(payments.map((p,i)=>i===pidx?updated:p));
+      syncToSheet(updated).catch(()=>{});
       const st=PAYMENT_STATUS[newStatus];
       // Show processed status on old message, remove keyboard
       await tgCall(cfg.token,'editMessageText',{
@@ -3217,6 +3233,8 @@ function renderPaymentModal(){
         if(cur.isNew)savePayments([...list,saved]);
         else savePayments(list.map(p=>p.id===saved.id?saved:p));
         showToast(cur.isNew?'✅ Đã tạo đề xuất!':'✅ Đã cập nhật!');
+        // Sync Google Sheet
+        syncToSheet(saved).catch(()=>{});
         // Notify Telegram
         const msgPrefix=cur.isNew?'💳 <b>Đề xuất thanh toán mới!</b>':(cur.status==='paid'?'✅ <b>Thanh toán đề xuất thành công!</b>':'🔄 <b>Cập nhật đề xuất thanh toán</b>');
         notifyPayment(saved,msgPrefix).catch(()=>{});
