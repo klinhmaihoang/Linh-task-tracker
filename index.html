@@ -1714,25 +1714,25 @@ async function pollSepayAPI(){
   const cfg=getPayTgCfg();
   if(!cfg.sepayApiKey)return;
   try{
-    // Lấy 20 giao dịch mới nhất từ Sepay API
-    const res=await fetch('https://my.sepay.vn/userapi/transactions/list?transaction_type=2&limit=20',{
+    // Sepay API v2 — poll giao dịch mới nhất
+    const lastId=lsGet('tt_sepay_last_id')||'';
+    const url='https://userapi.sepay.vn/v2/transactions?limit=20'+(lastId?'&since_id='+lastId:'');
+    const res=await fetch(url,{
       headers:{'Authorization':'Bearer '+cfg.sepayApiKey,'Content-Type':'application/json'}
     });
-    if(!res.ok)return;
-    const data=await res.json();
-    if(!data||!Array.isArray(data.transactions))return;
+    if(!res.ok){console.warn('Sepay API error:',res.status);return;}
+    const json=await res.json();
+    if(!json||json.status!=='success'||!Array.isArray(json.data))return;
 
     const allPays=getPayments();
-    const lastSepayCheck=lsGet('tt_sepay_last_id')||'';
 
-    for(const tx of data.transactions){
-      // Bỏ qua giao dịch đã xử lý
-      if(lastSepayCheck&&String(tx.id)<=String(lastSepayCheck))continue;
-      // Chỉ xử lý tiền ra (amount_out > 0)
+    for(const tx of json.data){
+      // Chỉ xử lý tiền ra (transfer_type === 'out')
+      if(tx.transfer_type!=='out')continue;
       const tienRaNum=parseInt(tx.amount_out||0)||0;
       if(!tienRaNum)continue;
 
-      const noiDung=(tx.transaction_content||tx.content||'').toLowerCase();
+      const noiDung=(tx.transaction_content||'').toLowerCase();
       const taiKhoanNo=(tx.account_number||'').replace(/[^0-9]/g,'');
 
       // Tìm đề xuất approved khớp
@@ -1779,9 +1779,9 @@ async function pollSepayAPI(){
         );
       }
     }
-    // Lưu ID mới nhất đã xử lý
-    if(data.transactions.length>0){
-      lsSet('tt_sepay_last_id',String(data.transactions[0].id));
+    // Lưu ID mới nhất đã xử lý (UUID của Sepay v2)
+    if(json.data.length>0){
+      lsSet('tt_sepay_last_id',String(json.data[0].id));
     }
   }catch(e){console.warn('pollSepayAPI:',e.message);}
 }
