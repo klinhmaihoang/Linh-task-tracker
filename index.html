@@ -355,31 +355,32 @@ function showToast(msg,ok=true){
 
 function buildTaskKeyboard(taskId,status,progress,assigneeTgId){
   const rows=[];
-  // Row 1: Accept task (only when todo and not yet accepted)
-  if(status==='todo'){
-    rows.push([{text:'🙋 Nhận task này',callback_data:'accept|'+taskId+'|0'}]);
+  // Row 1: Accept task — show when todo AND not yet locked to someone
+  if(status==='todo'&&!assigneeTgId){
+    rows.push([{text:'🙋 ── NHẬN TASK NÀY ──',callback_data:'accept|'+taskId+'|0'}]);
+  } else if(status==='todo'&&assigneeTgId){
+    rows.push([{text:'✅ Đã có người nhận task',callback_data:'view|'+taskId+'|0'}]);
   }
   // Row 2: Status buttons
   rows.push([
     {text:(status==='inprogress'?'✅ ':'')+'Đang làm',callback_data:'s|'+taskId+'|inprogress'},
     {text:(status==='done'?'✅ ':'')+'Xong',callback_data:'s|'+taskId+'|done'},
   ]);
-  // Row 3: Progress + Note
+  // Row 3: Progress
   const pct=progress||0;
-  const progRow=[0,25,50,75,100].map(p=>({
+  rows.push([0,25,50,75,100].map(p=>({
     text:(pct===p?'●':'○')+p+'%',
     callback_data:'p|'+taskId+'|'+p
-  }));
-  rows.push(progRow);
-  // Row 4: Note (difficulty) + Feedback
+  })));
+  // Row 4: Note + Feedback
   rows.push([
-    {text:'📝 Ghi chú khó khăn',callback_data:'note|'+taskId+'|0'},
+    {text:'📝 Ghi chú',callback_data:'note|'+taskId+'|0'},
     {text:'⭐ Feedback',callback_data:'fb|'+taskId+'|0'},
   ]);
-  // Row 5: Edit and Delete
+  // Row 5: Edit + Delete
   rows.push([
-    {text:'✏️ Sửa task',callback_data:'edit|'+taskId+'|0'},
-    {text:'🗑 Xóa task',callback_data:'del|'+taskId+'|0'},
+    {text:'✏️ Sửa',callback_data:'edit|'+taskId+'|0'},
+    {text:'🗑 Xóa',callback_data:'del|'+taskId+'|0'},
   ]);
   return{inline_keyboard:rows};
 }
@@ -450,7 +451,7 @@ async function notifyTask(task,cat,msgPrefix){
       ?buildTaskMsg(task,cat,cat.tgMsgTemplate)
       :'🔖 <b>'+task.title+'</b>'+(task.desc?'\n📝 '+task.desc:'')+assigneeTag+(cat?'\n🗂 '+cat.icon+' '+cat.name:'')+dlText+'\n'+priEmoji+' Ưu tiên: '+PRI_LABEL[task.priority]+'\n📊 ['+progBar+'] '+pct+'% · '+STATUS_LABEL[task.status]+(task.notes?'\n\n📌 <b>Khó khăn:</b> '+task.notes:'')+'\n\n👇 Nhân viên bấm nút để cập nhật:';
     const text=msgPrefix+'\n\n'+bodyText;
-    const keyboard=buildTaskKeyboard(task.id,task.status,task.progress);
+    const keyboard=buildTaskKeyboard(task.id,task.status,task.progress,task.assigneeTgId);
     await tgCall(tg.token,'sendMessage',{chat_id:tg.chatId,text,parse_mode:'HTML',reply_markup:keyboard});
   }catch(e){console.warn('notifyTask:',e.message);}
 }
@@ -827,7 +828,7 @@ async function pollOneBot(token,chatId){
       const updated=[...(S.tasks||[]),newTask];
       saveTasks(updated);
       const dlLine=deadline?'\n⏰ Deadline: '+formatDate(deadline):'';
-      const taskKeyboard=buildTaskKeyboard(newTask.id,'todo',0);
+      const taskKeyboard=buildTaskKeyboard(newTask.id,'todo',0,null);
       await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',reply_markup:taskKeyboard,
         text:'📌 <b>Task mới!</b>\n\n🔖 <b>'+title+'</b>\n👤 '+(assignee||'Chưa gán')+'\n🗂 '+(cat?cat.icon+' '+cat.name:'')+dlLine+'\n'+({high:'🔴',medium:'🟡',low:'🟢'}[priority]||'🟡')+' Ưu tiên: '+PRI_LABEL[priority]+'\n📊 [░░░░░░░░░░] 0% · 📋 Cần làm'});
     }
