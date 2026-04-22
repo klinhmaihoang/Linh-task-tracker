@@ -2283,41 +2283,41 @@ function renderPaymentModal(){
       const members=getPayMembers();
       const makePersonField=(label,nameKey,tgKey)=>{
         const wrap=div({className:'field'},[el('label',{},[label])]);
-        const nameInp=inp({className:'input',value:form[nameKey]||'',placeholder:'Tên người...'});
+
+        // Declare tgInp FIRST so sel.onChange can reference it
+        const tgInp=inp({className:'input',value:form[tgKey]?'@'+form[tgKey]:'',placeholder:'@username (tự động hoặc nhập tay)',style:{marginTop:5,fontSize:12}});
+        tgInp.addEventListener('input',e=>silent(tgKey,e.target.value.replace(/^@/,'')));
+
+        const nameInp=inp({className:'input',value:form[nameKey]||'',placeholder:'Tên người...',style:{marginBottom:5}});
         nameInp.addEventListener('input',e=>silent(nameKey,e.target.value));
 
         if(members.length>0){
-          // Dropdown to pick from known members
           const sel=el('select',{className:'input',style:{marginBottom:6,background:'white'}},[
-            el('option',{value:''},[members.length+' thành viên — chọn hoặc nhập tay']),
+            el('option',{value:''},['— Chọn thành viên ('+members.length+') —']),
             ...members.map(m=>el('option',{
               value:m.id,
-              selected:form[tgKey]===m.username,
+              selected:form[tgKey]&&form[tgKey]===m.username,
             },[m.name+(m.username?' (@'+m.username+')':'')])),
           ]);
           sel.addEventListener('change',e=>{
             const m=members.find(x=>x.id===e.target.value);
             if(m){
-              S.modalData={...S.modalData,[nameKey]:m.name,[tgKey]:m.username};
+              silent(nameKey,m.name);
+              silent(tgKey,m.username||'');
               nameInp.value=m.name;
               tgInp.value=m.username?'@'+m.username:'';
             }
           });
           wrap.appendChild(sel);
         } else {
-          wrap.appendChild(div({style:{fontSize:11,color:'var(--text3)',marginBottom:6,padding:'4px 8px',background:'#fffbeb',borderRadius:4,border:'1px solid #fde68a'}},
-            ['💡 Chưa có thành viên. Yêu cầu mọi người nhắn /start vào bot để tự động ghi nhận.']
+          wrap.appendChild(div({style:{fontSize:11,color:'#92400e',marginBottom:6,padding:'5px 8px',background:'#fffbeb',borderRadius:4,border:'1px solid #fde68a'}},
+            ['💡 Chưa có thành viên — yêu cầu mọi người nhắn /start vào bot để tự ghi nhận.']
           ));
         }
 
-        // Manual name input
         wrap.appendChild(nameInp);
-
-        // TG username (auto-filled or manual)
-        const tgInp=inp({className:'input',value:form[tgKey]?'@'+form[tgKey]:'',placeholder:'@username (tự động hoặc nhập)',style:{marginTop:5,fontSize:12}});
-        tgInp.addEventListener('input',e=>silent(tgKey,e.target.value.replace(/^@/,'')));
+        wrap.appendChild(div({style:{fontSize:10,color:'var(--text3)',marginBottom:3}},['Telegram username:']));
         wrap.appendChild(tgInp);
-        wrap.appendChild(div({style:{fontSize:10,color:'var(--text3)',marginTop:3}},['Username dùng để tag & phân quyền trên Telegram']));
         return wrap;
       };
       return div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}},[
