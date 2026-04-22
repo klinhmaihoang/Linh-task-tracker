@@ -596,8 +596,7 @@ async function pollOneBot(token,chatId){
               progress:t.progress||10,
               acceptedAt:new Date().toISOString()
             };
-            const nt=S.tasks.map((x,i)=>i===taskIdx?accepted:x);
-            S.tasks=nt;lsSet('tt_tasks',nt);
+            saveTasks(S.tasks.map((x,i)=>i===taskIdx?accepted:x));
             const pct=accepted.progress;
             const bar='█'.repeat(Math.round(pct/10))+'░'.repeat(10-Math.round(pct/10));
             const kb=buildTaskKeyboard(taskId,accepted.status,pct,accepted.assigneeTgId);
@@ -625,7 +624,7 @@ async function pollOneBot(token,chatId){
         else if(type==='del'&&taskIdx>=0){
           const delT=S.tasks[taskIdx];
           const delCatCb=(S.categories||[]).find(c=>c.id===delT.categoryId);
-          S.tasks=S.tasks.filter((_,i)=>i!==taskIdx);lsSet('tt_tasks',S.tasks);
+          saveTasks(S.tasks.filter((_,i)=>i!==taskIdx));
           const who=cq.from?((cq.from.first_name||'')+(cq.from.last_name?' '+cq.from.last_name:'')||('@'+(cq.from.username||''))||'Nhân viên'):'Nhân viên';
           await tgCall(token,'editMessageReplyMarkup',{chat_id:chatId,message_id:cq.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
           await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:'🗑 <b>Đã xóa task</b>\n\n🔖 <b>'+delT.title+'</b>\n👤 '+(delT.assignee||'Chưa gán')+(delCatCb?'\n🗂 '+delCatCb.icon+' '+delCatCb.name:'')+'\n\n👆 Xóa bởi: <b>'+who+'</b>'}).catch(()=>{});
@@ -645,7 +644,7 @@ async function pollOneBot(token,chatId){
           else if(parts[2]==='todo'&&updated.progress===100)updated.progress=0;
           else if(parts[2]==='inprogress'&&updated.progress===0)updated.progress=10;
           const newTasks=S.tasks.map((t,i)=>i===taskIdx?updated:t);
-          S.tasks=newTasks;lsSet('tt_tasks',newTasks);
+          saveTasks(newTasks);
           const pct=updated.progress||0;
           const filled=Math.round(pct/10);
           const progBar='█'.repeat(filled)+'░'.repeat(10-filled);
@@ -666,7 +665,7 @@ async function pollOneBot(token,chatId){
           else if(updated.progress>0&&updated.status==='todo')updated.status='inprogress';
           else if(updated.progress===0&&updated.status==='done')updated.status='todo';
           const newTasks=S.tasks.map((t,i)=>i===taskIdx?updated:t);
-          S.tasks=newTasks;lsSet('tt_tasks',newTasks);
+          saveTasks(newTasks);
           const pct=updated.progress||0;
           const filled=Math.round(pct/10);
           const progBar='█'.repeat(filled)+'░'.repeat(10-filled);
@@ -718,7 +717,7 @@ async function pollOneBot(token,chatId){
       if(!delTask){await tgCall(token,'sendMessage',{chat_id:chatId,text:'❌ Không tìm thấy task ID: '+delId});continue;}
       const delCatObj=cats.find(c=>c.id===delTask.categoryId);
       const afterDel=(S.tasks||[]).filter(t=>t.id!==delId);
-      S.tasks=afterDel;lsSet('tt_tasks',afterDel);
+      saveTasks(afterDel);
       const delWho=msg.from?((msg.from.first_name||'')+(msg.from.last_name?' '+msg.from.last_name:'')||('@'+(msg.from.username||''))||'Nhân viên'):'Nhân viên';
       await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:'🗑 <b>Đã xóa task</b>\n\n🔖 <b>'+delTask.title+'</b>\n👤 '+(delTask.assignee||'Chưa gán')+(delCatObj?'\n🗂 '+delCatObj.icon+' '+delCatObj.name:'')+'\n\n👆 Xóa bởi: <b>'+delWho+'</b>'});
       continue;
@@ -743,7 +742,7 @@ async function pollOneBot(token,chatId){
       const newPriority=['high','medium','low'].includes(newPriRaw)?newPriRaw:orig.priority;
       const editedTask={...orig,title:newTitle,assignee:newAssignee,deadline:newDeadline,desc:newDesc,priority:newPriority};
       const afterEdit=S.tasks.map((t,i)=>i===editIdx?editedTask:t);
-      S.tasks=afterEdit;lsSet('tt_tasks',afterEdit);
+      saveTasks(afterEdit);
       const editCatObj=cats.find(c=>c.id===editedTask.categoryId);
       const pctE=editedTask.progress||0;
       const filledE=Math.round(pctE/10);
@@ -773,8 +772,7 @@ async function pollOneBot(token,chatId){
         continue;
       }
       const updatedNote={...noteTask,notes:noteText,notesUpdatedAt:new Date().toISOString()};
-      const nt=S.tasks.map((t,i)=>i===noteIdx?updatedNote:t);
-      S.tasks=nt;lsSet('tt_tasks',nt);
+      saveTasks(S.tasks.map((t,i)=>i===noteIdx?updatedNote:t));
       const noteCat=cats.find(c=>c.id===updatedNote.categoryId);
       const noteWho=tgUserName(msg.from);
       await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
@@ -795,8 +793,7 @@ async function pollOneBot(token,chatId){
       const fbTask=S.tasks[fbIdx];
       const fbWho=tgUserName(msg.from);
       const updatedFb={...fbTask,feedback:fbText,feedbackBy:fbWho,feedbackAt:new Date().toISOString()};
-      const nt=S.tasks.map((t,i)=>i===fbIdx?updatedFb:t);
-      S.tasks=nt;lsSet('tt_tasks',nt);
+      saveTasks(S.tasks.map((t,i)=>i===fbIdx?updatedFb:t));
       const fbCat=cats.find(c=>c.id===updatedFb.categoryId);
       // Notify assignee if they have tgUsername
       const assigneeTag=updatedFb.assigneeTgUsername?'\n👤 @'+updatedFb.assigneeTgUsername:'\n👤 '+(updatedFb.assignee||'');
@@ -828,8 +825,7 @@ async function pollOneBot(token,chatId){
         progress:accTask.progress||10,
         acceptedAt:new Date().toISOString()
       };
-      const accNt=S.tasks.map((t,i)=>i===accIdx?accAccepted:t);
-      S.tasks=accNt;lsSet('tt_tasks',accNt);
+      saveTasks(S.tasks.map((t,i)=>i===accIdx?accAccepted:t));
       const accCat=cats.find(c=>c.id===accAccepted.categoryId);
       const accBar='█'.repeat(Math.round((accAccepted.progress)/10))+'░'.repeat(10-Math.round((accAccepted.progress)/10));
       await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
