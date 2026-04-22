@@ -1047,8 +1047,8 @@ async function pollPaymentBot(){
       const updated={...payments[pidx],status:newStatus,
         approver:(action==='pay_approve'||action==='pay_reject')?presserName:(payments[pidx].approver||''),
         approverTg:(action==='pay_approve'||action==='pay_reject')?presserUsername:(payments[pidx].approverTg||''),
-        accountant:(action==='pay_paid')?presserName:(payments[pidx].accountant||''),
-        accountantTg:(action==='pay_paid')?presserUsername:(payments[pidx].accountantTg||''),
+        accountant:payments[pidx].accountant||'',
+        accountantTg:payments[pidx].accountantTg||'',
         lastActionAt:new Date().toISOString(),lastActionBy:presserName};
       savePayments(payments.map((p,i)=>i===pidx?updated:p));
       const st=PAYMENT_STATUS[newStatus];
@@ -3099,7 +3099,7 @@ function renderPaymentModal(){
         else savePayments(list.map(p=>p.id===saved.id?saved:p));
         showToast(cur.isNew?'✅ Đã tạo đề xuất!':'✅ Đã cập nhật!');
         // Notify Telegram
-        const msgPrefix=cur.isNew?'💳 <b>Đề xuất thanh toán mới!</b>':'🔄 <b>Cập nhật đề xuất thanh toán</b>';
+        const msgPrefix=cur.isNew?'💳 <b>Đề xuất thanh toán mới!</b>':(cur.status==='paid'?'✅ <b>Thanh toán đề xuất thành công!</b>':'🔄 <b>Cập nhật đề xuất thanh toán</b>');
         notifyPayment(saved,msgPrefix).catch(()=>{});
         // If new, also send QR + invoice images
         if(cur.isNew&&saved.bankCode&&saved.accountNo&&saved.amount){
