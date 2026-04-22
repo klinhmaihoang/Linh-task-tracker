@@ -3011,6 +3011,28 @@ function renderPaymentsView(mobile){
   // Header row
   const payCfg=getPayTgCfg();
   const payConnected=!!(payCfg.token&&payCfg.chatId);
+
+  // ── Bulk select state ──
+  const selectedIds=new Set();
+  const bulkBar=div({style:{display:'none',alignItems:'center',gap:8,padding:'8px 12px',background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:'var(--r8)',marginBottom:8,flexWrap:'wrap'}});
+  const updateBulkBar=()=>{
+    const n=selectedIds.size;
+    bulkBar.style.display=n>0?'flex':'none';
+    bulkBar.innerHTML='';
+    bulkBar.appendChild(span({style:{fontSize:13,fontWeight:600,color:'#DC2626',flex:1}},['Đã chọn '+n+' đề xuất']));
+    bulkBar.appendChild(btn({className:'btn btn-danger',style:{fontSize:12},onClick:()=>{
+      if(!confirm('Xóa '+n+' đề xuất đã chọn?'))return;
+      savePayments(getPayments().filter(p=>!selectedIds.has(p.id)));
+      showToast('🗑 Đã xóa '+n+' đề xuất');
+    }},['🗑 Xóa đã chọn']));
+    bulkBar.appendChild(btn({className:'btn btn-secondary',style:{fontSize:12},onClick:()=>{
+      selectedIds.clear();
+      // Uncheck all
+      wrap.querySelectorAll('input[type=checkbox]').forEach(cb=>cb.checked=false);
+      updateBulkBar();
+    }},['Bỏ chọn tất cả']));
+  };
+
   wrap.appendChild(div({style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.75rem',flexWrap:'wrap',gap:8}},[
     div({style:{fontSize:13,fontWeight:700,color:'var(--text1)'}},[payments.length+' đề xuất thanh toán']),
     div({style:{display:'flex',gap:6}},[
@@ -3018,9 +3040,22 @@ function renderPaymentsView(mobile){
         div({style:{width:6,height:6,borderRadius:'50%',background:payConnected?'#059669':'#9ca3af',flexShrink:0}},[]),
         payConnected?'Telegram ✓':'Kết nối TG',
       ]),
+      btn({className:'btn btn-secondary',style:{fontSize:12},onClick:()=>{
+        // Select all / deselect all
+        const all=getPayments();
+        if(selectedIds.size===all.length){selectedIds.clear();}
+        else{all.forEach(p=>selectedIds.add(p.id));}
+        wrap.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+          const id=cb.dataset.id;
+          cb.checked=selectedIds.has(id);
+        });
+        updateBulkBar();
+      }},['☑ Chọn tất cả']),
       btn({className:'btn btn-primary',style:{fontSize:13},onClick:()=>openPaymentModal(null)},['+ Tạo đề xuất']),
     ]),
   ]));
+
+  wrap.appendChild(bulkBar);
 
   // Payment list
   if(!payments.length){
@@ -3035,31 +3070,44 @@ function renderPaymentsView(mobile){
   payments.slice().reverse().forEach(p=>{
     const st=PAYMENT_STATUS[p.status]||PAYMENT_STATUS.pending;
     const bank=VIET_BANKS.find(b=>b.code===p.bankCode);
+
+    // Checkbox
+    const cb=el('input',{type:'checkbox','data-id':p.id,style:{width:16,height:16,cursor:'pointer',flexShrink:0,accentColor:'#DC2626'}});
+    cb.addEventListener('change',e=>{
+      e.stopPropagation();
+      if(cb.checked)selectedIds.add(p.id);
+      else selectedIds.delete(p.id);
+      updateBulkBar();
+    });
+
     const card=div({style:{
       background:'white',borderRadius:'var(--r12)',padding:'14px 16px',marginBottom:8,
-      border:'1px solid var(--border)',boxShadow:'var(--s1)',cursor:'pointer',
-      borderLeft:'3px solid '+st.c,
+      border:'1px solid var(--border)',boxShadow:'var(--s1)',
+      borderLeft:'3px solid '+st.c,display:'flex',gap:10,alignItems:'flex-start',
     }},[
-      div({style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}},[
-        div({style:{minWidth:0}},[
-          div({style:{fontSize:13,fontWeight:700,color:'var(--text1)',marginBottom:2}},[p.description||'(Không có mô tả)']),
-          div({style:{fontSize:11,color:'var(--text3)'}},[p.code+' · '+new Date(p.createdAt).toLocaleDateString('vi-VN')]),
+      div({style:{paddingTop:2}}, [cb]),
+      div({style:{flex:1,minWidth:0,cursor:'pointer'}},[
+        div({style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}},[
+          div({style:{minWidth:0}},[
+            div({style:{fontSize:13,fontWeight:700,color:'var(--text1)',marginBottom:2}},[p.description||'(Không có mô tả)']),
+            div({style:{fontSize:11,color:'var(--text3)'}},[p.code+' · '+new Date(p.createdAt).toLocaleDateString('vi-VN')]),
+          ]),
+          span({style:{fontSize:11,fontWeight:600,padding:'3px 9px',borderRadius:100,background:st.bg,color:st.c,border:'1px solid '+st.border,whiteSpace:'nowrap',marginLeft:8}},[st.icon+' '+st.label]),
         ]),
-        span({style:{fontSize:11,fontWeight:600,padding:'3px 9px',borderRadius:100,background:st.bg,color:st.c,border:'1px solid '+st.border,whiteSpace:'nowrap',marginLeft:8}},[st.icon+' '+st.label]),
+        div({style:{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}},[
+          div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['💰 '+formatMoney(p.amount)]),
+          div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['🏢 '+(p.supplier||'—')]),
+          div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['👤 '+(p.proposer||'—')]),
+          p.approver?div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['✓ '+(p.approver||'—')]):null,
+        ].filter(Boolean)),
+        div({style:{fontSize:11,color:'var(--text3)'}},['🏦 '+(bank?bank.name:p.bankCode||'—')+' · '+p.accountNo+(p.accountName?' · '+p.accountName:'')]),
+        div({style:{display:'flex',gap:6,marginTop:4,flexWrap:'wrap'}},[
+          p.receiptFileId?div({style:{fontSize:11,color:'#0369a1',background:'#e0f2fe',border:'1px solid #bae6fd',borderRadius:4,padding:'2px 7px'}},['🧾 Ủy nhiệm chi']):null,
+          (p.invoices&&p.invoices.length)?div({style:{fontSize:11,color:'#065f46',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:4,padding:'2px 7px'}},['📎 '+p.invoices.length+' hoá đơn']):null,
+        ].filter(Boolean)),
       ]),
-      div({style:{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}},[
-        div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['💰 '+formatMoney(p.amount)]),
-        div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['🏢 '+(p.supplier||'—')]),
-        div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['👤 '+(p.proposer||'—')]),
-        p.approver?div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['✓ '+(p.approver||'—')]):null,
-      ].filter(Boolean)),
-      div({style:{fontSize:11,color:'var(--text3)'}},['🏦 '+(bank?bank.name:p.bankCode||'—')+' · '+p.accountNo+(p.accountName?' · '+p.accountName:'')]),
-      div({style:{display:'flex',gap:6,marginTop:4,flexWrap:'wrap'}},[
-        p.receiptFileId?div({style:{fontSize:11,color:'#0369a1',background:'#e0f2fe',border:'1px solid #bae6fd',borderRadius:4,padding:'2px 7px'}},['🧾 Ủy nhiệm chi']):null,
-        (p.invoices&&p.invoices.length)?div({style:{fontSize:11,color:'#065f46',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:4,padding:'2px 7px'}},['📎 '+p.invoices.length+' hoá đơn']):null,
-      ].filter(Boolean)),
     ]);
-    card.addEventListener('click',()=>openPaymentModal(p));
+    card.querySelector('div[style*="flex:1"]').addEventListener('click',()=>openPaymentModal(p));
     wrap.appendChild(card);
   });
   return wrap;
