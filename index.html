@@ -1155,9 +1155,10 @@ async function syncPush(){
 async function syncPull(){
   const cfg=getSyncCfg();
   if(!cfg||!cfg.apiKey||!cfg.binId)return false;
-  // KHÔNG pull nếu đang có data local chưa push — tránh ghi đè mất data
+  // KHÔNG pull nếu đang có data local chưa push
   if(_pendingPush||_syncTimer){
-    setState({syncStatus:'ok',syncMsg:'Chờ push local xong...'},false);
+    console.log('[sync] skip pull — pending push');
+    setState({syncStatus:'ok',syncMsg:'⏳ Đang push local...'},false);
     return false;
   }
   setState({syncStatus:'syncing'},false);render();
@@ -1333,9 +1334,10 @@ async function init(){
   if(_t!==null)lsSet('tt_tasks',_t);
   if(_c!==null)lsSet('tt_categories',_c);
   setState({tasks,categories:cats,loading:false});
-  // Auto-pull from cloud if configured
+  // Auto-pull khi mở app (chỉ lần đầu, _pendingPush chắc chắn false lúc này)
   const cfg=getSyncCfg();
   if(cfg&&cfg.apiKey&&cfg.binId){
+    _pendingPush=false; // mới mở app, chưa có thay đổi
     syncPull().catch(()=>{});
   } else if(_t===null&&_c===null){
     // First time on this device & no sync config — show welcome/connect screen
@@ -1343,11 +1345,8 @@ async function init(){
   }
   startBotPolling();
   startDeadlineReminder();
-  // Auto-pull every 30s to stay in sync with other devices
-  setInterval(()=>{
-    const c=getSyncCfg();
-    if(c&&c.apiKey&&c.binId)syncPull().catch(()=>{});
-  },30000);
+  // Auto-pull đã tắt — chỉ pull khi mở app lần đầu hoặc nhấn sync thủ công
+  // Tránh ghi đè data local khi đang có thay đổi chưa push
 }
 
 
