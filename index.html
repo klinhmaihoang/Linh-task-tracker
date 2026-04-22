@@ -441,10 +441,8 @@ async function notifyPayment(payment,msgPrefix){
       [{text:'❌ Từ chối',callback_data:'pay_reject|'+payment.id+'|'+mgrTg}],
     ]};
   } else if(payment.status==='approved'){
-    // Kế toán xác nhận đã thanh toán xong (sau khi GĐ duyệt ngân hàng)
-    keyboard={inline_keyboard:[
-      [{text:'🧾 Đã thanh toán — gửi ủy nhiệm chi',callback_data:'pay_paid|'+payment.id+'|'+accTg}],
-    ]};
+    // Chờ Sepay tự động xác nhận — không cần bấm thủ công
+    keyboard={inline_keyboard:[]};
   } else {
     keyboard={inline_keyboard:[]};
   }
@@ -653,19 +651,21 @@ async function pollPaymentBot(){
             const allPays=getPayments();
             // Find matching approved payment
             const matchIdx=allPays.findIndex(p=>{
-              if(p.status!=='approved'&&p.status!=='awaiting_receipt'&&p.status!=='pending')return false;
+              // Chỉ match đề xuất đã được quản lý duyệt
+              if(p.status!=='approved')return false;
               const amountMatch=parseInt(p.amount||0)===tienRaNum;
-              // Ưu tiên: mã đề xuất (VD: PTA4ZDU4) có trong nội dung CK
+              // Ưu tiên cao nhất: mã đề xuất có trong nội dung CK (VD: PTA4ZDU4)
               const codeMatch=noiDung.includes((p.code||'').toLowerCase());
-              // Số tài khoản khớp (so sánh toàn bộ hoặc 6 số cuối)
+              if(codeMatch)return true;
+              // Thứ 2: số tài khoản khớp + số tiền khớp
               const acctMatch=taiKhoanNo&&p.accountNo&&(
                 p.accountNo===taiKhoanNo||
                 p.accountNo.slice(-6)===taiKhoanNo.slice(-6)
               );
-              // Fallback: số tiền + từ khoá nội dung
+              if(acctMatch&&amountMatch)return true;
+              // Fallback: số tiền khớp + từ khoá mô tả
               const descWords=(p.description||'').toLowerCase().split(' ').filter(w=>w.length>3);
-              const descMatch=descWords.some(w=>noiDung.includes(w));
-              return codeMatch||(acctMatch&&amountMatch)||( amountMatch&&descMatch);
+              return amountMatch&&descWords.some(w=>noiDung.includes(w));
             });
 
             if(matchIdx>=0){
@@ -1031,7 +1031,7 @@ async function pollPaymentBot(){
       const statusMap={
         pay_approve:'approved',
         pay_reject:'rejected',
-        pay_paid:'awaiting_receipt',
+        // pay_paid đã bỏ — Sepay tự động xác nhận
       };
       const newStatus=statusMap[action];
       if(!newStatus)continue;
@@ -1066,41 +1066,19 @@ async function pollPaymentBot(){
       const accTag2=updated.accountantTg?'\n📊 KT: @'+updated.accountantTg+(updated.accountant?' ('+updated.accountant+')':''):(updated.accountant?'\n📊 KT: '+updated.accountant:'');
       const tagLine=[updated.proposerTg,updated.approverTg,updated.accountantTg].filter(Boolean).map(u=>'@'+u).join(' ');
 
-      // If GĐ approved → re-send with "Đã thanh toán" button
+      // Quản lý duyệt → thông báo + chờ Sepay tự động xác nhận tiền ra
       if(newStatus==='approved'){
-        // Tag kế toán để soạn lệnh
         const accTg2=getPayTgCfg().accountantTg||'';
-        const accMention=accTg2?'\n📊 @'+accTg2+' — kế toán soạn lệnh chuyển khoản và chờ GĐ duyệt ngân hàng':'';
+        const accMention=accTg2?'\n📊 @'+accTg2+' — vui lòng soạn lệnh chuyển khoản trên ngân hàng':'';
+        const bank4=VIET_BANKS.find(b=>b.code===updated.bankCode);
         await notifyPayment({...updated,_extraNote:accMention},'✅ <b>Quản lý đã duyệt!</b>').catch(()=>{});
-      }
-      // If "Đã thanh toán" pressed → reply to original message asking for receipt
-      else if(newStatus==='awaiting_receipt'){
-        const receiptMsg={
-          chat_id:cfg.chatId,
-          parse_mode:'HTML',
-          text:'🧾 <b>Kế toán: Gửi ủy nhiệm chi để hoàn tất</b>'+(tagLine?'\n'+tagLine:'')
-            +'\n\n🔖 <b>'+updated.code+'</b>\n📝 '+updated.description+'\n💰 <b>'+formatMoney(updated.amount)+'</b>'
-            +propTag2+accTag2+apvTag2
-            +'\n\n✅ Quản lý đã duyệt. GĐ đã duyệt ngân hàng.'
-            +'\n📎 Reply tin nhắn này và đính kèm ảnh/PDF ủy nhiệm chi để hoàn tất quy trình.',
-          reply_markup:{force_reply:true,selective:false,input_field_placeholder:'Đính kèm ảnh ủy nhiệm chi...'}
-        };
-        // Try to reply to original proposal message; fallback to normal send if fails
-        let receiptSent=null;
-        if(updated.tgMsgId||updated.tgLatestMsgId){
-          const replyId=updated.tgLatestMsgId||updated.tgMsgId;
-          receiptSent=await tgCall(cfg.token,'sendMessage',{...receiptMsg,reply_to_message_id:replyId}).catch(()=>null);
+        // Gửi lại QR để kế toán tiện chuyển khoản
+        if(updated.bankCode&&updated.accountNo&&updated.amount){
+          await notifyPaymentWithQR(updated).catch(()=>{});
         }
-        // Fallback: send without reply if reply failed or no msgId
-        if(!receiptSent){
-          receiptSent=await tgCall(cfg.token,'sendMessage',receiptMsg).catch(()=>null);
-        }
-        // Save receipt-request msgId — replies to THIS message are auto-detected
-        if(receiptSent&&receiptSent.message_id){
-          const pList=getPayments();
-          const pIdx2=pList.findIndex(p=>p.id===updated.id);
-          if(pIdx2>=0){pList[pIdx2]={...pList[pIdx2],tgReceiptRequestMsgId:receiptSent.message_id,tgLatestMsgId:receiptSent.message_id};lsSet('tt_payments',pList);}
-        }
+        await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+          text:'⏳ Đang chờ Sepay xác nhận tiền ra tự động...\n🔖 <b>'+updated.code+'</b> · '+formatMoney(updated.amount)
+        }).catch(()=>{});
       }
       // Other statuses → normal notification
       else {
