@@ -1322,6 +1322,9 @@ async function init(){
   const cfg=getSyncCfg();
   if(cfg&&cfg.apiKey&&cfg.binId){
     syncPull().catch(()=>{});
+  } else if(_t===null&&_c===null){
+    // First time on this device & no sync config — show welcome/connect screen
+    setTimeout(()=>setState({modal:'welcome'}),300);
   }
   startBotPolling();
   startDeadlineReminder();
@@ -2085,6 +2088,7 @@ function render(){
   if(S.modal==='reminder')renderReminderModal();
   if(S.modal==='payEdit')renderPaymentModal();
   if(S.modal==='payTgCfg')renderPayTgCfgModal();
+  if(S.modal==='welcome')renderWelcomeModal();
 
   // ── Toast ──
   if(S.toast){
@@ -2481,6 +2485,75 @@ function makeSelect(name,value,options,onChange){
 }
 
 // ─── Sync Modal ───────────────────────────────────────────────────────────────
+function renderWelcomeModal(){
+  const apiKeyInp=inp({className:'input',type:'password',placeholder:'$2b$10$xxxxxxxx... (API Key JSONBin)',style:{fontFamily:'monospace',fontSize:12}});
+  const binIdInp=inp({className:'input',placeholder:'Bin ID từ thiết bị cũ (để trống nếu tạo mới)',style:{fontFamily:'monospace',fontSize:12}});
+  const statusDiv=div({style:{fontSize:12,padding:'8px 12px',borderRadius:'var(--r8)',display:'none',marginTop:8,fontWeight:500}});
+  function setStatus(msg,type){
+    statusDiv.textContent=msg;statusDiv.style.display='block';
+    const c={ok:{bg:'#ECFDF5',c:'#065f46',border:'#A7F3D0'},error:{bg:'#FEF2F2',c:'#991B1B',border:'#FECACA'},info:{bg:'#EFF6FF',c:'#1e40af',border:'#BFDBFE'}}[type]||{};
+    Object.assign(statusDiv.style,{background:c.bg,color:c.c,border:'1px solid '+c.border});
+  }
+  const syncBtn=btn({className:'btn btn-primary',style:{flex:1},onClick:async()=>{
+    const key=apiKeyInp.value.trim();
+    if(!key){setStatus('❌ Nhập API Key trước!','error');return;}
+    syncBtn.textContent='⟳ Đang kết nối...';syncBtn.disabled=true;
+    try{
+      let binId=binIdInp.value.trim();
+      if(!binId){
+        setStatus('⟳ Đang tạo kho dữ liệu mới...','info');
+        binId=await syncCreateBin(key);
+      } else {
+        setStatus('⟳ Đang tải dữ liệu từ cloud...','info');
+      }
+      lsSet('tt_sync_cfg',{apiKey:key,binId});
+      binIdInp.value=binId;
+      const pulled=await syncPull();
+      if(pulled){
+        setStatus('✅ Đã tải '+( S.tasks||[]).length+' task, '+(getPayments()||[]).length+' đề xuất!','ok');
+        setTimeout(()=>setState({modal:null}),1500);
+      } else {
+        setStatus('⚠ Kết nối được nhưng cloud chưa có data. Đã lưu cấu hình.','info');
+        setTimeout(()=>setState({modal:null}),2000);
+      }
+    }catch(e){
+      setStatus('❌ Lỗi: '+e.message,'error');
+      syncBtn.textContent='Kết nối & Tải dữ liệu';syncBtn.disabled=false;
+    }
+  }},['☁ Kết nối & Tải dữ liệu']);
+
+  const modalEl=div({className:'modal',style:{maxWidth:480}},[
+    div({className:'modal-header'},[
+      div({className:'modal-title'},['👋 Thiết bị mới — Đồng bộ dữ liệu']),
+      btn({className:'modal-close',onClick:()=>setState({modal:null})},['×']),
+    ]),
+    div({style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:'var(--r8)',padding:'12px 14px',marginBottom:14,fontSize:13,color:'#1e40af',lineHeight:1.6}},[
+      div({style:{fontWeight:700,marginBottom:4}},['☁ Đồng bộ từ thiết bị cũ']),
+      div({},[' Nhập API Key + Bin ID để tải dữ liệu về thiết bị này. Tìm thấy trong Settings → Cloud Sync trên thiết bị cũ.']),
+    ]),
+    div({className:'field'},[
+      el('label',{},['API KEY (JSONBin.io) *']),
+      apiKeyInp,
+    ]),
+    div({className:'field'},[
+      el('label',{},['BIN ID (để trống nếu muốn tạo mới)']),
+      binIdInp,
+    ]),
+    statusDiv,
+    div({style:{display:'flex',gap:8,marginTop:16}},[
+      btn({className:'btn btn-secondary',onClick:()=>setState({modal:null})},['Bỏ qua']),
+      syncBtn,
+    ]),
+    div({style:{marginTop:14,padding:'10px 14px',background:'var(--bg)',borderRadius:'var(--r8)',border:'1px solid var(--border)',fontSize:12,color:'var(--text3)',lineHeight:1.7}},[
+      div({style:{fontWeight:600,color:'var(--text2)',marginBottom:4}},['📋 Cách lấy API Key + Bin ID:']),
+      div({},[' 1. Vào jsonbin.io → đăng nhập']),
+      div({},[' 2. Vào Settings → API Keys → copy Master Key']),
+      div({},[' 3. Bin ID: vào Settings → Cloud Sync trên thiết bị cũ để xem']),
+    ]),
+  ]);
+  showModal(modalEl);
+}
+
 function renderSyncModal(){
   const cfg=getSyncCfg()||{apiKey:'',binId:''};
   const hasConfig=!!(cfg.apiKey&&cfg.binId);
@@ -2572,6 +2645,16 @@ function renderSyncModal(){
         ]),
     ]),
 
+    // Show Bin ID prominently when connected so user can copy to other devices
+    hasConfig&&cfg.binId?div({style:{background:'#FFF9C4',border:'1px solid #F9A825',borderRadius:'var(--r8)',padding:'10px 14px',marginBottom:12,fontSize:12}},[ 
+      div({style:{fontWeight:700,color:'#6D4C41',marginBottom:6}},['📱 Dùng trên thiết bị khác — copy thông tin này:']),
+      div({style:{display:'flex',gap:6,alignItems:'center',marginBottom:4}},[
+        div({style:{fontSize:11,color:'#795548',width:56,flexShrink:0}},['Bin ID:']),
+        div({style:{fontFamily:'monospace',fontSize:12,fontWeight:700,color:'#1a1a1a',background:'white',border:'1px solid #ddd',borderRadius:4,padding:'3px 8px',flex:1,userSelect:'all',cursor:'text'}},[ cfg.binId]),
+        btn({style:{fontSize:11,padding:'4px 8px',borderRadius:4,border:'1px solid #ddd',background:'white',cursor:'pointer'},onClick:()=>{navigator.clipboard.writeText(cfg.binId).then(()=>showToast('✅ Đã copy Bin ID!'));}},['Copy']),
+      ]),
+      div({style:{fontSize:11,color:'#795548'}},['Thiết bị mới: mở Settings → Cloud Sync (hoặc tự hiện khi mở lần đầu) → nhập API Key + Bin ID này']),
+    ]):null,
     makeField('Master Key (từ jsonbin.io)',[apiKeyInp]),
     makeField('Bin ID (dán vào nếu đã có từ thiết bị khác)',[binIdInp]),
     statusDiv,
