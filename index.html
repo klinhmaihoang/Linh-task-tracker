@@ -707,46 +707,52 @@ async function pollOneBot(token,chatId){
 function startBotPolling(){
   const tabId=Math.random().toString(36).slice(2);
   let amLeader=false;
+  let isPolling=false;
 
-  // Use BroadcastChannel for instant cross-tab leader election
   const bc=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('tt_poll'):{postMessage:()=>{},addEventListener:()=>{}};
-
-  // When another tab claims leadership, we step down immediately
   bc.addEventListener('message',e=>{
-    if(e.data&&e.data.type==='claim'&&e.data.id!==tabId){
-      amLeader=false;
-    }
+    if(e.data&&e.data.type==='claim'&&e.data.id!==tabId)amLeader=false;
   });
 
-  // Try to become leader: write to localStorage AND broadcast
   function claimLeader(){
     const now=Date.now();
     const lock=lsGet('tt_poll_lock');
-    // Another tab claimed recently (within 8s) — stay silent
-    if(lock&&lock.id!==tabId&&(now-lock.ts)<8000){amLeader=false;return false;}
+    if(lock&&lock.id!==tabId&&(now-lock.ts)<5000){amLeader=false;return false;}
     amLeader=true;
     lsSet('tt_poll_lock',{id:tabId,ts:now});
     bc.postMessage({type:'claim',id:tabId});
     return true;
   }
 
-  // Also listen to localStorage changes from other tabs (fallback for no BroadcastChannel)
   window.addEventListener('storage',e=>{
     if(e.key==='tt_poll_lock'){
       try{const v=JSON.parse(e.newValue);if(v&&v.id!==tabId)amLeader=false;}catch{}
     }
   });
 
-  // Initial claim attempt after short random delay to avoid simultaneous starts
-  setTimeout(()=>claimLeader(), Math.random()*2000);
-
-  setInterval(async()=>{
+  async function doPoll(){
+    if(isPolling)return;
     if(!claimLeader())return;
-    const configs=getAllTgConfigs(S.categories);
-    for(const tg of configs){
-      try{await pollOneBot(tg.token,tg.chatId);}catch{}
-    }
-  },6000);
+    isPolling=true;
+    try{
+      const configs=getAllTgConfigs(S.categories);
+      for(const tg of configs){
+        try{await pollOneBot(tg.token,tg.chatId);}catch{}
+      }
+    }finally{isPolling=false;}
+  }
+
+  // Poll every 3 seconds
+  setTimeout(()=>claimLeader(),Math.random()*1000);
+  setInterval(doPoll,3000);
+
+  // Poll immediately when tab becomes visible
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden)doPoll();
+  });
+
+  // Poll immediately when window gets focus
+  window.addEventListener('focus',()=>doPoll());
 }
 
 function startDeadlineReminder(){
