@@ -1379,11 +1379,10 @@ async function init(){
   }
   startBotPolling();
   startDeadlineReminder();
-  // Auto-pull thông minh mỗi 15s — chỉ pull khi cloud mới hơn local
-  setInterval(()=>{
-    syncPullIfNewer().catch(()=>{});
-    pollSepayAPI().catch(()=>{});
-  }, 15000);
+  // Auto-pull thông minh mỗi 20s — chỉ pull khi cloud mới hơn local
+  setInterval(()=>{ syncPullIfNewer().catch(()=>{}); }, 20000);
+  // Poll Sepay API mỗi 30s
+  setInterval(()=>{ pollSepayAPI().catch(()=>{}); }, 30000);
 }
 
 
