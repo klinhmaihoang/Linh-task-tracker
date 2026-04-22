@@ -353,24 +353,35 @@ function showToast(msg,ok=true){
   setState({toast:{msg,ok},toastTimer:timer});
 }
 
-function buildTaskKeyboard(taskId,status,progress){
-  // Row 1: Status buttons
-  const statusRow=[
+function buildTaskKeyboard(taskId,status,progress,assigneeTgId){
+  const rows=[];
+  // Row 1: Accept task (only when todo and not yet accepted)
+  if(status==='todo'){
+    rows.push([{text:'🙋 Nhận task này',callback_data:'accept|'+taskId+'|0'}]);
+  }
+  // Row 2: Status buttons
+  rows.push([
     {text:(status==='inprogress'?'✅ ':'')+'Đang làm',callback_data:'s|'+taskId+'|inprogress'},
     {text:(status==='done'?'✅ ':'')+'Xong',callback_data:'s|'+taskId+'|done'},
-  ];
-  // Row 2: Progress buttons (0,25,50,75,100)
+  ]);
+  // Row 3: Progress + Note
   const pct=progress||0;
   const progRow=[0,25,50,75,100].map(p=>({
     text:(pct===p?'●':'○')+p+'%',
     callback_data:'p|'+taskId+'|'+p
   }));
-    // Row 3: Edit and Delete
-  const actionRow=[
+  rows.push(progRow);
+  // Row 4: Note (difficulty) + Feedback
+  rows.push([
+    {text:'📝 Ghi chú khó khăn',callback_data:'note|'+taskId+'|0'},
+    {text:'⭐ Feedback',callback_data:'fb|'+taskId+'|0'},
+  ]);
+  // Row 5: Edit and Delete
+  rows.push([
     {text:'✏️ Sửa task',callback_data:'edit|'+taskId+'|0'},
     {text:'🗑 Xóa task',callback_data:'del|'+taskId+'|0'},
-  ];
-  return{inline_keyboard:[statusRow,progRow,actionRow]};
+  ]);
+  return{inline_keyboard:rows};
 }
 
 function buildTaskMsg(task,cat,template){
@@ -393,6 +404,19 @@ function buildTaskMsg(task,cat,template){
   const dlText=task.deadline?'\n⏰ Deadline: '+formatDate(task.deadline):'';
   return '🔖 <b>'+task.title+'</b>'+(task.desc?'\n📝 '+task.desc:'')+'\n👤 '+(task.assignee||'Chưa gán')+(cat?'\n🗂 '+cat.icon+' '+cat.name:'')+dlText+'\n'+priEmoji+' Ưu tiên: '+PRI_LABEL[task.priority]+dlText.replace('\n⏰ Deadline:','')+'\n📊 ['+progBar+'] '+pct+'% · '+STATUS_LABEL[task.status]+'\n\n👇 Nhân viên bấm nút để cập nhật:';
 }
+// ── Telegram user helper ─────────────────────────────────────────────────────
+function tgUserName(from){
+  if(!from)return'Nhân viên';
+  return((from.first_name||'')+(from.last_name?' '+from.last_name:'')).trim()||('@'+(from.username||''))||'Nhân viên';
+}
+function tgUserId(from){return from?String(from.id):'';} 
+// Check if person pressing button is the assigned employee (or no assignment lock set)
+function isAuthorized(task,from){
+  if(!task.assigneeTgId)return true; // No lock — anyone can update
+  if(!from)return false;
+  return String(from.id)===String(task.assigneeTgId);
+}
+
 // In-memory sent set — never shared across tabs
 const _sentNotifs=new Set();
 // BroadcastChannel to tell other tabs "I already sent this"
@@ -420,9 +444,11 @@ async function notifyTask(task,cat,msgPrefix){
     const progBar='█'.repeat(filled)+'░'.repeat(10-filled);
     const priEmoji={high:'🔴',medium:'🟡',low:'🟢'}[task.priority]||'🟡';
     const dlText=task.deadline?'\n⏰ Deadline: '+formatDate(task.deadline):'';
+    // Tag assignee if they have a tgUsername stored
+    const assigneeTag=task.assigneeTgUsername?'\n👤 '+task.assignee+' (@'+task.assigneeTgUsername+')':(task.assignee?'\n👤 '+task.assignee:'');
     const bodyText=cat&&cat.tgMsgTemplate
       ?buildTaskMsg(task,cat,cat.tgMsgTemplate)
-      :'🔖 <b>'+task.title+'</b>'+(task.desc?'\n📝 '+task.desc:'')+'\n👤 '+(task.assignee||'Chưa gán')+(cat?'\n🗂 '+cat.icon+' '+cat.name:'')+dlText+'\n'+priEmoji+' Ưu tiên: '+PRI_LABEL[task.priority]+'\n📊 ['+progBar+'] '+pct+'% · '+STATUS_LABEL[task.status]+'\n\n👇 Nhân viên bấm nút để cập nhật:';
+      :'🔖 <b>'+task.title+'</b>'+(task.desc?'\n📝 '+task.desc:'')+assigneeTag+(cat?'\n🗂 '+cat.icon+' '+cat.name:'')+dlText+'\n'+priEmoji+' Ưu tiên: '+PRI_LABEL[task.priority]+'\n📊 ['+progBar+'] '+pct+'% · '+STATUS_LABEL[task.status]+(task.notes?'\n\n📌 <b>Khó khăn:</b> '+task.notes:'')+'\n\n👇 Nhân viên bấm nút để cập nhật:';
     const text=msgPrefix+'\n\n'+bodyText;
     const keyboard=buildTaskKeyboard(task.id,task.status,task.progress);
     await tgCall(tg.token,'sendMessage',{chat_id:tg.chatId,text,parse_mode:'HTML',reply_markup:keyboard});
@@ -514,6 +540,20 @@ async function pollOneBot(token,chatId){
         const taskIdx=(S.tasks||[]).findIndex(t=>String(t.id)===String(taskId));
         // Always answer to remove loading spinner
         await tgCall(token,'answerCallbackQuery',{callback_query_id:cq.id}).catch(()=>{});
+        const cbTask=taskIdx>=0?S.tasks[taskIdx]:null;
+        const cbFrom=cq.from;
+        const cbWho=tgUserName(cbFrom);
+        const cbCat=cbTask?(S.categories||[]).find(c=>c.id===cbTask.categoryId):null;
+
+        // ── Feature 4: Auth check for mutating actions ──
+        const mutatingTypes=['s','p','note'];
+        if(mutatingTypes.includes(type)&&cbTask&&!isAuthorized(cbTask,cbFrom)){
+          await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+            text:'🔒 Chỉ <b>'+(cbTask.assignee||'nhân viên được giao')+'</b> mới được cập nhật task này.'
+          }).catch(()=>{});
+          continue;
+        }
+
         if(type==='view'){
           if(taskIdx<0){await tgCall(token,'sendMessage',{chat_id:chatId,text:'❌ Không tìm thấy task.'}).catch(()=>{});}
           else{
@@ -526,18 +566,62 @@ async function pollOneBot(token,chatId){
             const dlV=vt.deadline?'\n⏰ <b>Deadline:</b> '+formatDate(vt.deadline):'';
             const dlSt=deadlineStatus(vt.deadline,vt.status);
             const dlStatus=dlSt?'\n'+dlSt.icon+' <i>'+dlSt.label+'</i>':'';
+            const assigneeTagV=vt.assigneeTgUsername?' (@'+vt.assigneeTgUsername+')':'';
             const detailText='🔖 <b>'+vt.title+'</b>'
               +(vt.desc?'\n📝 '+vt.desc:'')
-              +'\n\n👤 <b>Người thực hiện:</b> '+(vt.assignee||'Chưa gán')
+              +'\n\n👤 <b>Người thực hiện:</b> '+(vt.assignee||'Chưa gán')+assigneeTagV
               +(vCat?'\n🗂 <b>Category:</b> '+vCat.icon+' '+vCat.name:'')
               +dlV+dlStatus
               +'\n'+priEmoji+' <b>Ưu tiên:</b> '+PRI_LABEL[vt.priority]
               +'\n📊 <b>Tiến độ:</b> ['+progBarV+'] '+pctV+'%'
               +'\n'+STATUS_LABEL[vt.status]
+              +(vt.notes?'\n\n📌 <b>Khó khăn:</b> '+vt.notes:'')
+              +(vt.feedback?'\n\n⭐ <b>Feedback:</b> '+vt.feedback+(vt.feedbackBy?' — '+vt.feedbackBy:''):'')
               +'\n\n📅 <b>Ngày tạo:</b> '+(vt.date||'');
             const detailKeyboard=buildTaskKeyboard(vt.id,vt.status,vt.progress);
             await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',reply_markup:detailKeyboard,text:detailText}).catch(()=>{});
           }
+        }
+        else if(type==='accept'&&taskIdx>=0){
+          // Feature 2: Employee accepts task — lock tgId to them
+          const t=S.tasks[taskIdx];
+          if(t.assigneeTgId&&String(t.assigneeTgId)!==String(cbFrom?.id)){
+            await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+              text:'🔒 Task này đã được <b>'+t.assignee+'</b> nhận rồi.'}).catch(()=>{});
+          } else {
+            const accepted={...t,
+              assigneeTgId:tgUserId(cbFrom),
+              assigneeTgUsername:cbFrom?.username||'',
+              assignee:t.assignee||cbWho, // keep original name if set
+              status:'inprogress',
+              progress:t.progress||10,
+              acceptedAt:new Date().toISOString()
+            };
+            const nt=S.tasks.map((x,i)=>i===taskIdx?accepted:x);
+            S.tasks=nt;lsSet('tt_tasks',nt);
+            const pct=accepted.progress;
+            const bar='█'.repeat(Math.round(pct/10))+'░'.repeat(10-Math.round(pct/10));
+            const kb=buildTaskKeyboard(taskId,accepted.status,pct,accepted.assigneeTgId);
+            await tgCall(token,'editMessageReplyMarkup',{chat_id:chatId,message_id:cq.message.message_id,reply_markup:kb}).catch(()=>{});
+            await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+              text:'🙋 <b>'+cbWho+'</b> đã nhận task!\n\n🔖 <b>'+accepted.title+'</b>\n👤 '+accepted.assignee+(cbFrom?.username?' (@'+cbFrom.username+')':'')+(cbCat?'\n🗂 '+cbCat.icon+' '+cbCat.name:'')+'\n📊 ['+bar+'] '+pct+'% · ⚡ Đang làm\n\n✅ Chỉ '+accepted.assignee+' mới được cập nhật tiến độ.'
+            }).catch(()=>{});
+          }
+        }
+        else if(type==='note'&&taskIdx>=0){
+          // Feature 2: Employee adds difficulty note — prompt via /note command
+          const t=S.tasks[taskIdx];
+          await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+            text:'📝 <b>Ghi chú khó khăn cho task:</b>\n🔖 <b>'+t.title+'</b>\n\nGửi theo format:\n<code>/note '+t.id+' [nội dung ghi chú]</code>\n\nVí dụ:\n<code>/note '+t.id+' Đang bị block do chờ API từ team backend</code>'
+          }).catch(()=>{});
+        }
+        else if(type==='fb'&&taskIdx>=0){
+          // Feature 3: Feedback from manager
+          const t=S.tasks[taskIdx];
+          const existFb=t.feedback?'\n\n📋 <b>Feedback hiện tại:</b>\n'+t.feedback:'';
+          await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+            text:'⭐ <b>Feedback cho task:</b>\n🔖 <b>'+t.title+'</b>\n👤 '+(t.assignee||'Chưa gán')+existFb+'\n\nGửi theo format:\n<code>/feedback '+t.id+' [nội dung feedback]</code>\n\nVí dụ:\n<code>/feedback '+t.id+' Làm tốt! Cần chú ý thêm phần UX</code>'
+          }).catch(()=>{});
         }
         else if(type==='del'&&taskIdx>=0){
           const delT=S.tasks[taskIdx];
@@ -568,13 +652,12 @@ async function pollOneBot(token,chatId){
           const progBar='█'.repeat(filled)+'░'.repeat(10-filled);
           const taskCat=(S.categories||[]).find(c=>c.id===updated.categoryId);
           const dlText=updated.deadline?'\n⏰ Deadline: '+formatDate(updated.deadline):'';
-          const who=cq.from?((cq.from.first_name||'')+(cq.from.last_name?' '+cq.from.last_name:'')||('@'+(cq.from.username||''))||'Nhân viên'):'Nhân viên';
           const isDone=updated.status==='done';
           const updatedTaskText='📌 <b>'+updated.title+'</b>\n👤 '+(updated.assignee||'Chưa gán')+(taskCat?'\n🗂 '+taskCat.icon+' '+taskCat.name:'')+dlText+'\n📊 ['+progBar+'] '+pct+'% · '+STATUS_LABEL[updated.status];
-          const newKeyboard=buildTaskKeyboard(taskId,updated.status,updated.progress);
+          const newKeyboard=buildTaskKeyboard(taskId,updated.status,updated.progress,updated.assigneeTgId);
           await tgCall(token,'editMessageText',{chat_id:chatId,message_id:cq.message.message_id,text:updatedTaskText,parse_mode:'HTML',reply_markup:newKeyboard}).catch(()=>{});
           const statusEmoji=isDone?'✅':'🔄';
-          const notif=statusEmoji+' <b>'+(isDone?'Hoàn thành':'Cập nhật tiến độ')+'</b>\n\n🔖 <b>'+updated.title+'</b>\n👤 '+(updated.assignee||'Chưa gán')+(taskCat?'\n🗂 '+taskCat.icon+' '+taskCat.name:'')+'\n📊 ['+progBar+'] <b>'+pct+'%</b>'+(isDone?' — Đã hoàn thành 🎉':' — Đang thực hiện')+'\n\n👆 Cập nhật bởi: <b>'+who+'</b>';
+          const notif=statusEmoji+' <b>'+(isDone?'Hoàn thành':'Cập nhật tiến độ')+'</b>\n\n🔖 <b>'+updated.title+'</b>\n👤 '+(updated.assignee||'Chưa gán')+(taskCat?'\n🗂 '+taskCat.icon+' '+taskCat.name:'')+'\n📊 ['+progBar+'] <b>'+pct+'%</b>'+(isDone?' — Đã hoàn thành 🎉':' — Đang thực hiện')+(updated.notes?'\n\n📌 <b>Ghi chú:</b> '+updated.notes:'')+'\n\n👆 Cập nhật bởi: <b>'+cbWho+'</b>';
           await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:notif}).catch(()=>{});
         }
         else if(type==='p'&&taskIdx>=0){
@@ -590,13 +673,12 @@ async function pollOneBot(token,chatId){
           const progBar='█'.repeat(filled)+'░'.repeat(10-filled);
           const taskCat=(S.categories||[]).find(c=>c.id===updated.categoryId);
           const dlText=updated.deadline?'\n⏰ Deadline: '+formatDate(updated.deadline):'';
-          const who=cq.from?((cq.from.first_name||'')+(cq.from.last_name?' '+cq.from.last_name:'')||('@'+(cq.from.username||''))||'Nhân viên'):'Nhân viên';
           const isDone=updated.status==='done';
           const updatedTaskText='📌 <b>'+updated.title+'</b>\n👤 '+(updated.assignee||'Chưa gán')+(taskCat?'\n🗂 '+taskCat.icon+' '+taskCat.name:'')+dlText+'\n📊 ['+progBar+'] '+pct+'% · '+STATUS_LABEL[updated.status];
-          const newKeyboard=buildTaskKeyboard(taskId,updated.status,updated.progress);
+          const newKeyboard=buildTaskKeyboard(taskId,updated.status,updated.progress,updated.assigneeTgId);
           await tgCall(token,'editMessageText',{chat_id:chatId,message_id:cq.message.message_id,text:updatedTaskText,parse_mode:'HTML',reply_markup:newKeyboard}).catch(()=>{});
           const statusEmoji=isDone?'✅':'🔄';
-          const notif=statusEmoji+' <b>'+(isDone?'Hoàn thành':'Cập nhật tiến độ')+'</b>\n\n🔖 <b>'+updated.title+'</b>\n👤 '+(updated.assignee||'Chưa gán')+(taskCat?'\n🗂 '+taskCat.icon+' '+taskCat.name:'')+'\n📊 ['+progBar+'] <b>'+pct+'%</b>'+(isDone?' — Đã hoàn thành 🎉':' — Đang thực hiện')+'\n\n👆 Cập nhật bởi: <b>'+who+'</b>';
+          const notif=statusEmoji+' <b>'+(isDone?'Hoàn thành':'Cập nhật tiến độ')+'</b>\n\n🔖 <b>'+updated.title+'</b>\n👤 '+(updated.assignee||'Chưa gán')+(taskCat?'\n🗂 '+taskCat.icon+' '+taskCat.name:'')+'\n📊 ['+progBar+'] <b>'+pct+'%</b>'+(isDone?' — Đã hoàn thành 🎉':' — Đang thực hiện')+(updated.notes?'\n\n📌 <b>Ghi chú:</b> '+updated.notes:'')+'\n\n👆 Cập nhật bởi: <b>'+cbWho+'</b>';
           await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:notif}).catch(()=>{});
         }
       }
@@ -608,7 +690,7 @@ async function pollOneBot(token,chatId){
     const catList=visibleCats.map((c,i)=>(i+1)+'. '+c.icon+' '+c.name).join('\n');
     if(text==='/help'||text==='/start'){
       await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
-        text:'<b>Task Tracker Bot</b>\n\nLệnh:\n/add — Thêm task mới\n/list — Xem tasks\n/delete [ID] — Xóa task\n/edit — Sửa task (bấm ✏️ trên task)\n/help — Trợ giúp\n\n<b>Format /add:</b>\n<code>/add\nTên task\nNgười thực hiện (hoặc -)\nDD/MM/YYYY HH:MM (hoặc -)\nMô tả (hoặc -)\nSố thứ tự category (hoặc -)\nÜu tiên: high/medium/low (hoặc -)</code>\n\n<b>Categories:</b>\n'+catList});
+        text:'<b>Task Tracker Bot</b>\n\nLệnh:\n/add — Thêm task mới\n/list — Xem tasks\n/delete [ID] — Xóa task\n/edit — Sửa task (bấm ✏️ trên task)\n/note [ID] [nội dung] — Ghi chú khó khăn\n/feedback [ID] [nội dung] — Feedback từ quản lý\n/help — Trợ giúp\n\n<b>Format /add:</b>\n<code>/add\nTên task\nNgười thực hiện (hoặc -)\nDD/MM/YYYY HH:MM (hoặc -)\nMô tả (hoặc -)\nSố thứ tự category (hoặc -)\nÜu tiên: high/medium/low (hoặc -)</code>\n\n<b>Categories:</b>\n'+catList});
       continue;
     }
     if(text==='/list'){
@@ -673,6 +755,54 @@ async function pollOneBot(token,chatId){
       const editKeyboard=buildTaskKeyboard(editedTask.id,editedTask.status,editedTask.progress);
       await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',reply_markup:editKeyboard,
         text:'✅ <b>Đã cập nhật task!</b>\n\n🔖 <b>'+editedTask.title+'</b>'+(editedTask.desc?'\n📝 '+editedTask.desc:'')+'\n👤 '+(editedTask.assignee||'Chưa gán')+(editCatObj?'\n🗂 '+editCatObj.icon+' '+editCatObj.name:'')+dlLineE+'\n'+priEmojiE+' Ưu tiên: '+PRI_LABEL[editedTask.priority]+'\n📊 ['+progBarE+'] '+pctE+'%\n\n👆 Sửa bởi: <b>'+editWho+'</b>'});
+      continue;
+    }
+    if(text.startsWith('/note')){
+      // Feature 2: /note [taskId] [text]
+      const parts=text.split(' ');
+      const noteId=Number(parts[1]);
+      const noteText=parts.slice(2).join(' ').trim();
+      if(!noteId||!noteText){
+        await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:'📝 Format: <code>/note [ID task] [nội dung]</code>'});
+        continue;
+      }
+      const noteIdx=(S.tasks||[]).findIndex(t=>String(t.id)===String(noteId)&&(myCatIds.size===0||myCatIds.has(t.categoryId)));
+      if(noteIdx<0){await tgCall(token,'sendMessage',{chat_id:chatId,text:'❌ Không tìm thấy task ID: '+noteId});continue;}
+      const noteTask=S.tasks[noteIdx];
+      if(!isAuthorized(noteTask,msg.from)){
+        await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:'🔒 Chỉ <b>'+(noteTask.assignee||'nhân viên được giao')+'</b> mới được ghi chú.'});
+        continue;
+      }
+      const updatedNote={...noteTask,notes:noteText,notesUpdatedAt:new Date().toISOString()};
+      const nt=S.tasks.map((t,i)=>i===noteIdx?updatedNote:t);
+      S.tasks=nt;lsSet('tt_tasks',nt);
+      const noteCat=cats.find(c=>c.id===updatedNote.categoryId);
+      const noteWho=tgUserName(msg.from);
+      await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+        text:'📝 <b>Đã ghi chú khó khăn</b>\n\n🔖 <b>'+updatedNote.title+'</b>\n👤 '+(updatedNote.assignee||'Chưa gán')+(noteCat?'\n🗂 '+noteCat.icon+' '+noteCat.name:'')+'\n\n📌 <b>Khó khăn:</b> '+noteText+'\n\n✍️ Ghi bởi: <b>'+noteWho+'</b>'});
+      continue;
+    }
+    if(text.startsWith('/feedback')){
+      // Feature 3: /feedback [taskId] [text]
+      const parts=text.split(' ');
+      const fbId=Number(parts[1]);
+      const fbText=parts.slice(2).join(' ').trim();
+      if(!fbId||!fbText){
+        await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:'⭐ Format: <code>/feedback [ID task] [nội dung]</code>'});
+        continue;
+      }
+      const fbIdx=(S.tasks||[]).findIndex(t=>String(t.id)===String(fbId)&&(myCatIds.size===0||myCatIds.has(t.categoryId)));
+      if(fbIdx<0){await tgCall(token,'sendMessage',{chat_id:chatId,text:'❌ Không tìm thấy task ID: '+fbId});continue;}
+      const fbTask=S.tasks[fbIdx];
+      const fbWho=tgUserName(msg.from);
+      const updatedFb={...fbTask,feedback:fbText,feedbackBy:fbWho,feedbackAt:new Date().toISOString()};
+      const nt=S.tasks.map((t,i)=>i===fbIdx?updatedFb:t);
+      S.tasks=nt;lsSet('tt_tasks',nt);
+      const fbCat=cats.find(c=>c.id===updatedFb.categoryId);
+      // Notify assignee if they have tgUsername
+      const assigneeTag=updatedFb.assigneeTgUsername?'\n👤 @'+updatedFb.assigneeTgUsername:'\n👤 '+(updatedFb.assignee||'');
+      await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+        text:'⭐ <b>Feedback từ quản lý</b>\n\n🔖 <b>'+updatedFb.title+'</b>'+assigneeTag+(fbCat?'\n🗂 '+fbCat.icon+' '+fbCat.name:'')+'\n\n💬 <b>Feedback:</b> '+fbText+'\n\n✍️ Từ: <b>'+fbWho+'</b>'});
       continue;
     }
     if(text.startsWith('/add')){
@@ -840,6 +970,8 @@ function renderTaskCard(t){
         border:'1px solid '+(isDone?'#BBF7D0':dl?dl.border:'var(--border)')
       }},['⏰ '+formatDate(t.deadline)+(dl?' · '+dl.label:'')])
     ]):null,
+    t.notes?div({style:{fontSize:11,color:'#92400E',background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:4,padding:'3px 8px',marginBottom:6,lineHeight:1.5}},['📌 '+t.notes]):null,
+    t.feedback?div({style:{fontSize:11,color:'#065F46',background:'#ECFDF5',border:'1px solid #A7F3D0',borderRadius:4,padding:'3px 8px',marginBottom:6,lineHeight:1.5}},['⭐ '+t.feedback]):null,
     div({style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:6}},[
       span({style:{
         fontSize:11,padding:'2px 8px',borderRadius:4,fontWeight:500,
@@ -1147,6 +1279,9 @@ function renderTaskModal(){
   descTa.value=form.desc||'';
   descTa.addEventListener('input',e=>silent('desc',e.target.value));
 
+  const tgUserInp=inp({className:'input',value:form.assigneeTgUsername||'',placeholder:'username (không có @)'});
+  tgUserInp.addEventListener('input',e=>silent('assigneeTgUsername',e.target.value));
+
   const modalEl=div({className:'modal'},[
     div({className:'modal-header'},[
       div({className:'modal-title'},[isNew?'Tạo công việc mới':'Chỉnh sửa công việc']),
@@ -1160,6 +1295,10 @@ function renderTaskModal(){
         dl?div({style:{marginTop:5,fontSize:12,fontWeight:600,color:dl.c}},[dl.icon+' '+dl.label]):null,
         form.deadline?btn({style:{marginTop:4,fontSize:11,color:'var(--text3)',background:'none',border:'none',textDecoration:'underline',padding:0},onClick:()=>loud('deadline','')},['Xóa deadline']):null,
       ]),
+    ]),
+    makeField('Telegram Username nhân viên (để tag & phân quyền)',[
+      tgUserInp,
+      div({style:{fontSize:11,color:'var(--text3)',marginTop:4}},['Nhân viên nhắn /start cho bot trước để lấy username. Chỉ người này mới được cập nhật tiến độ.']),
     ]),
     makeField('Category',[
       div({style:{display:'flex',flexWrap:'wrap',gap:6}},cats.map(cat=>{
@@ -1212,7 +1351,7 @@ function renderTaskModal(){
       btn({className:'btn btn-secondary',onClick:()=>setState({modal:null,modalData:null})},['Hủy']),
       btn({className:'btn btn-primary',style:{flex:1,background:selectedCat?selectedCat.color:'var(--text1)'},onClick:()=>{
         // Read latest values directly from inputs
-        const saved={...S.modalData,title:titleInp.value.trim(),assignee:assigneeInp.value,deadline:deadlineInp.value,desc:descTa.value};
+        const saved={...S.modalData,title:titleInp.value.trim(),assignee:assigneeInp.value,deadline:deadlineInp.value,desc:descTa.value,assigneeTgUsername:(tgUserInp.value||'').trim().replace('@','')};
         if(!saved.title)return;
         handleSaveTask(saved,isNew);
       }},[isNew?'Tạo công việc':'Lưu thay đổi']),
