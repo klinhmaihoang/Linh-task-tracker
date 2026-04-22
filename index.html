@@ -1108,8 +1108,10 @@ async function pollPaymentBot(){
 function getSyncCfg(){return lsGet('tt_sync_cfg');}
 
 let _syncTimer=null;
+let _pendingPush=false; // true khi có thay đổi local chưa push lên cloud
+
 function scheduleSyncPush(){
-  // Debounce: wait 1.5s after last change before pushing
+  _pendingPush=true; // đánh dấu có data local chưa sync
   if(_syncTimer)clearTimeout(_syncTimer);
   _syncTimer=setTimeout(syncPush,1500);
 }
@@ -1133,6 +1135,7 @@ async function syncPush(){
       body:JSON.stringify(data)
     });
     if(!res.ok)throw new Error('HTTP '+res.status);
+    _pendingPush=false; // push thành công, local đã sync
     lsSet('tt_sync_lastpush',Date.now());
     setState({syncStatus:'ok',syncMsg:'Đã sync '+new Date().toLocaleTimeString('vi-VN')},false);render();
   }catch(e){
@@ -1143,6 +1146,11 @@ async function syncPush(){
 async function syncPull(){
   const cfg=getSyncCfg();
   if(!cfg||!cfg.apiKey||!cfg.binId)return false;
+  // KHÔNG pull nếu đang có data local chưa push — tránh ghi đè mất data
+  if(_pendingPush||_syncTimer){
+    setState({syncStatus:'ok',syncMsg:'Chờ push local xong...'},false);
+    return false;
+  }
   setState({syncStatus:'syncing'},false);render();
   try{
     const res=await fetch('https://api.jsonbin.io/v3/b/'+cfg.binId+'/latest',{
@@ -1152,14 +1160,6 @@ async function syncPull(){
     const json=await res.json();
     const data=json.record;
     if(!data||!Array.isArray(data.tasks)||!Array.isArray(data.categories))throw new Error('Dữ liệu cloud không hợp lệ');
-    // Only apply cloud data if it's newer than local last push
-    const localLastPush=lsGet('tt_sync_lastpush')||0;
-    const cloudSavedAt=data.savedAt?new Date(data.savedAt).getTime():0;
-    // Allow small clock skew (2s). If cloud is older than local, skip overwrite
-    if(cloudSavedAt < localLastPush - 2000){
-      setState({syncStatus:'ok',syncMsg:'Local mới hơn cloud — bỏ qua pull'},false);
-      return true;
-    }
     S.tasks=data.tasks;
     S.categories=data.categories;
     lsSet('tt_tasks',data.tasks);
@@ -1168,7 +1168,6 @@ async function syncPull(){
     if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
     if(data.payTgCfg&&data.payTgCfg.token)lsSet('tt_pay_tg_cfg',data.payTgCfg);
     if(data.savedAt)lsSet('tt_sync_lastpush',new Date(data.savedAt).getTime());
-    // setState triggers render() which will call getPayments()/getPayMembers() fresh from localStorage
     setState({syncStatus:'ok',syncMsg:'Đã đồng bộ '+new Date().toLocaleTimeString('vi-VN')+'  ('+
       (S.tasks||[]).length+'T '+(data.payments||[]).length+'P)'});
     return true;
