@@ -282,7 +282,7 @@ function getAllTgConfigs(cats){
 function saveTasks(nt){setState({tasks:nt});lsSet('tt_tasks',nt);scheduleSyncPush();}
 function saveCats(nc){setState({categories:nc});lsSet('tt_categories',nc);scheduleSyncPush();}
 function getPayments(){return lsGet('tt_payments')||[];}
-function savePayments(list){lsSet('tt_payments',list);scheduleSyncPush();}
+function savePayments(list){lsSet('tt_payments',list);scheduleSyncPush();render();}
 function genPaymentCode(){return 'PT'+Date.now().toString(36).toUpperCase().slice(-6);}
 function getPayTgCfg(){return lsGet('tt_pay_tg_cfg')||{token:'',chatId:''};}
 function savePayTgCfg(cfg){lsSet('tt_pay_tg_cfg',cfg);}
@@ -541,7 +541,9 @@ async function syncPull(){
     if(Array.isArray(data.payments))lsSet('tt_payments',data.payments);
     if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
     if(data.savedAt)lsSet('tt_sync_lastpush',new Date(data.savedAt).getTime());
-    setState({syncStatus:'ok',syncMsg:'Đã đồng bộ '+new Date().toLocaleTimeString('vi-VN')});
+    // setState triggers render() which will call getPayments()/getPayMembers() fresh from localStorage
+    setState({syncStatus:'ok',syncMsg:'Đã đồng bộ '+new Date().toLocaleTimeString('vi-VN')+'  ('+
+      (S.tasks||[]).length+'T '+(data.payments||[]).length+'P)'});
     return true;
   }catch(e){
     setState({syncStatus:'error',syncMsg:'Pull lỗi: '+e.message},false);render();
@@ -1501,6 +1503,7 @@ function importData(){
       if(Array.isArray(data.payments))lsSet('tt_payments',data.payments);
       if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
       showToast('✅ Đã import '+data.tasks.length+' task'+(data.payments?' + '+data.payments.length+' đề xuất':'')+'!');
+      render();
     }catch(e){showToast('❌ Lỗi đọc file: '+e.message,false);}
   };
   input.click();
