@@ -556,7 +556,7 @@ async function notifyInvoiceImages(payment){
 }
 
 
-const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbw49L3I37jiUE-dry4v4lBaEd8J860P9IALaWnuUBEJ6xP6aNMuM2H8lsVN1Hmvdk7ItQ/exec';
+const GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwAazh0bSXQQNBJYH2P_HUHZaZO5yyBgWvOROOsRLqh7fnR9QFU8MfOCxsdz4d4fWDGUw/exec';
 
 async function syncToSheet(payment){
   try{
@@ -1201,24 +1201,23 @@ async function syncPull(){
 async function syncPullIfNewer(){
   const cfg=getSyncCfg();
   if(!cfg||!cfg.apiKey||!cfg.binId)return;
-  // Bỏ qua nếu đang có pending push
   if(_pendingPush||_syncTimer)return;
   try{
-    // Chỉ lấy metadata (không lấy toàn bộ data) để kiểm tra savedAt
     const res=await fetch('https://api.jsonbin.io/v3/b/'+cfg.binId+'/latest',{
-      headers:{'X-Master-Key':cfg.apiKey,'X-Bin-Meta':'true'}
+      headers:{'X-Master-Key':cfg.apiKey}
     });
     if(!res.ok)return;
     const json=await res.json();
-    const cloudSavedAt=json.record?.savedAt?new Date(json.record.savedAt).getTime():0;
+    // savedAt nằm trong record (tool ghi vào khi push)
+    const cloudSavedAt=json.record&&json.record.savedAt?new Date(json.record.savedAt).getTime():0;
     const localLastPush=lsGet('tt_sync_lastpush')||0;
-    // Chỉ pull nếu cloud mới hơn local ít nhất 3 giây
+    console.log('[sync] cloud:',new Date(cloudSavedAt).toLocaleTimeString(),'local:',new Date(localLastPush).toLocaleTimeString());
     if(cloudSavedAt>localLastPush+3000){
-      console.log('[sync] cloud newer, pulling...',new Date(cloudSavedAt).toLocaleTimeString());
+      console.log('[sync] cloud newer — pulling...');
       await syncPull();
     }
   }catch(e){
-    // Silently ignore auto-pull errors
+    // Silently ignore
   }
 }
 
