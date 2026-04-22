@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -302,6 +301,128 @@ function savePayMember(from){
   lsSet('tt_pay_members',members);
 }
 
+// ── Conversation session state (per user) ──────────────────────────────────
+function getSessions(){return lsGet('tt_pay_sessions')||{};}
+function getSession(userId){return getSessions()[String(userId)]||null;}
+function setSession(userId,data){
+  const s=getSessions();
+  s[String(userId)]=data;
+  lsSet('tt_pay_sessions',s);
+}
+function clearSession(userId){
+  const s=getSessions();
+  delete s[String(userId)];
+  lsSet('tt_pay_sessions',s);
+}
+
+// ── Conversation flow handler ──────────────────────────────────────────────
+// Parse template reply: lines starting with field labels
+function parseTemplate(text){
+  const result={};
+  const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+  for(const line of lines){
+    const colonIdx=line.indexOf(':');
+    if(colonIdx<0)continue;
+    const key=line.slice(0,colonIdx).trim().toLowerCase();
+    const val=line.slice(colonIdx+1).trim();
+    if(!val||val==='?')continue;
+    if(key.includes('cung cấp')||key.includes('supplier'))result.supplier=val;
+    else if(key.includes('số tiền')||key.includes('tiền'))result.amount=val.replace(/[^0-9]/g,'');
+    else if(key.includes('nội dung')||key.includes('content')||key.includes('ck'))result.description=val;
+    else if(key.includes('ngân hàng')||key.includes('bank')){
+      if(/^[0-9]+$/.test(val))result.bankCode=val;
+      else result.bankName=val;
+    } else if(key.includes('số tk')||key.includes('stk')||key.includes('account no'))result.accountNo=val.replace(/ /g,'');
+    else if(key.includes('tên tk')||key.includes('tên tài khoản')||key.includes('account name'))result.accountName=val.toUpperCase();
+    else if(key.includes('ghi chú')||key.includes('note'))result.notes=val;
+  }
+  return result;
+}
+
+async function handlePaySession(token,chatId,userId,userName,pmsg,ptxt,session){
+  // TEMPLATE ADD flow — user fills in a form template
+  if(session.flow==='add_template'){
+    clearSession(userId);
+    const parsed=parseTemplate(ptxt);
+    // Match bank by name
+    if(parsed.bankName&&!parsed.bankCode){
+      // Try match by name
+      const bMatch=VIET_BANKS.find(b=>
+        b.name.toLowerCase().includes(parsed.bankName.toLowerCase())||
+        parsed.bankName.toLowerCase().includes(b.name.toLowerCase())
+      );
+      if(bMatch)parsed.bankCode=bMatch.code;
+      else parsed.bankCode=parsed.bankName; // fallback: use as-is
+    }
+    if(!parsed.bankCode)parsed.bankCode=(session.data&&session.data.bankCode)||'970432';
+    const missing=[];
+    if(!parsed.supplier)missing.push('Nhà cung cấp');
+    if(!parsed.amount)missing.push('Số tiền');
+    if(!parsed.description)missing.push('Nội dung CK');
+    if(!parsed.accountNo)missing.push('Số TK');
+    if(!parsed.accountName)missing.push('Tên TK');
+    if(missing.length){
+      await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+        reply_markup:{force_reply:true,input_field_placeholder:'Điền đầy đủ rồi gửi lại...'},
+        text:'⚠️ Còn thiếu: <b>'+missing.join(', ')+'</b>\nVui lòng điền đầy đủ rồi gửi lại template.'
+      }).catch(()=>{});
+      setSession(userId,{flow:'add_template',data:{bankCode:parsed.bankCode||'970432'}});
+      return true;
+    }
+    // All good — confirm
+    const bank=VIET_BANKS.find(b=>b.code===parsed.bankCode);
+    const confirmKb={inline_keyboard:[
+      [{text:'✅ Xác nhận tạo đề xuất',callback_data:'pay_sess_confirm|'+userId+'|ok'}],
+      [{text:'✏️ Điền lại',callback_data:'pay_sess_confirm|'+userId+'|redo'}],
+      [{text:'❌ Hủy',callback_data:'pay_sess_confirm|'+userId+'|cancel'}],
+    ]};
+    setSession(userId,{flow:'confirm',data:{...parsed,proposer:session.data?.proposer||userName}});
+    await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',reply_markup:confirmKb,
+      text:'📋 <b>Xác nhận đề xuất:</b>\n\n'
+        +'🏢 '+parsed.supplier+'\n'
+        +'💰 <b>'+formatMoney(parsed.amount)+'</b>\n'
+        +'📝 '+parsed.description+'\n'
+        +'🏦 '+(bank?bank.name:parsed.bankCode)+' · '+parsed.accountNo+'\n'
+        +'👤 '+parsed.accountName
+        +(parsed.notes?'\n📌 '+parsed.notes:'')
+        +'\n\nThông tin đúng chưa?'
+    }).catch(()=>{});
+    return true;
+  }
+
+  // TEMPLATE EDIT flow
+  if(session.flow==='edit_template'){
+    clearSession(userId);
+    const orig=session.data?.orig||{};
+    const parsed=parseTemplate(ptxt);
+    if(parsed.bankName&&!parsed.bankCode){
+      const bm=VIET_BANKS.find(b=>b.name.toLowerCase().includes(parsed.bankName.toLowerCase()));
+      if(bm)parsed.bankCode=bm.code;
+    }
+    const edited={...orig,
+      supplier:parsed.supplier||orig.supplier,
+      amount:parsed.amount||orig.amount,
+      description:parsed.description||orig.description,
+      bankCode:parsed.bankCode||orig.bankCode,
+      accountNo:parsed.accountNo||orig.accountNo,
+      accountName:parsed.accountName||orig.accountName,
+      notes:parsed.notes!==undefined?parsed.notes:orig.notes,
+      updatedAt:new Date().toISOString()
+    };
+    const allP=getPayments();
+    const idx=allP.findIndex(p=>p.id===orig.id);
+    if(idx>=0){savePayments(allP.map((p,i)=>i===idx?edited:p));}
+    await notifyPayment(edited,'✏️ <b>Đề xuất đã được cập nhật!</b>').catch(()=>{});
+    const bank2=VIET_BANKS.find(b=>b.code===edited.bankCode);
+    await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+      text:'✅ <b>Đã cập nhật '+orig.code+'</b>\n📝 '+edited.description+'\n💰 <b>'+formatMoney(edited.amount)+'</b>\n🏦 '+(bank2?bank2.name:edited.bankCode)+' · '+edited.accountNo
+    }).catch(()=>{});
+    return true;
+  }
+
+  return false;
+}
+
 async function notifyPayment(payment,msgPrefix){
   const cfg=getPayTgCfg();
   if(!cfg.token||!cfg.chatId)return;
@@ -310,33 +431,29 @@ async function notifyPayment(payment,msgPrefix){
   const st=PAYMENT_STATUS[payment.status]||PAYMENT_STATUS.pending;
   // Build keyboard based on current status & roles
   const cfg2=getPayTgCfg();
-  const accTg=cfg2.accountantTg||'';
-  const dirTg=payment.approverTg||'';
+  const mgrTg=payment.approverTg||''; // Quản lý vận hành
+  const accTg=cfg2.accountantTg||'';  // Kế toán
   let keyboard;
   if(payment.status==='pending'){
-    // Kế toán duyệt/từ chối
+    // Quản lý vận hành duyệt hoặc từ chối
     keyboard={inline_keyboard:[
-      [{text:'📋 KT Duyệt',callback_data:'pay_acc_approve|'+payment.id+'|'+accTg}],
-      [{text:'❌ KT Từ chối',callback_data:'pay_acc_reject|'+payment.id+'|'+accTg}],
-    ]};
-  } else if(payment.status==='acc_approved'){
-    // Giám đốc duyệt/từ chối
-    keyboard={inline_keyboard:[
-      [{text:'✅ GĐ Duyệt thanh toán',callback_data:'pay_approve|'+payment.id+'|'+dirTg}],
-      [{text:'❌ GĐ Từ chối',callback_data:'pay_reject|'+payment.id+'|'+dirTg}],
+      [{text:'✅ Duyệt đề xuất',callback_data:'pay_approve|'+payment.id+'|'+mgrTg}],
+      [{text:'❌ Từ chối',callback_data:'pay_reject|'+payment.id+'|'+mgrTg}],
     ]};
   } else if(payment.status==='approved'){
-    // Đánh dấu đã TT → yêu cầu ủy nhiệm chi
+    // Kế toán xác nhận đã thanh toán xong (sau khi GĐ duyệt ngân hàng)
     keyboard={inline_keyboard:[
-      [{text:'💳 Đã thanh toán — gửi ủy nhiệm chi',callback_data:'pay_paid|'+payment.id+'|'+dirTg}],
+      [{text:'🧾 Đã thanh toán — gửi ủy nhiệm chi',callback_data:'pay_paid|'+payment.id+'|'+accTg}],
     ]};
   } else {
     keyboard={inline_keyboard:[]};
   }
   const proposerTag=payment.proposerTg?'\n👤 '+payment.proposer+' (@'+payment.proposerTg+')':'\n👤 '+payment.proposer;
-  const approverTag=payment.approver?(payment.approverTg?'\n✓ Người duyệt: '+payment.approver+' (@'+payment.approverTg+')':'\n✓ Người duyệt: <b>'+payment.approver+'</b>'):'';
+  const approverTag=payment.approver?(payment.approverTg?'\n✅ Quản lý: '+payment.approver+' (@'+payment.approverTg+')':'\n✅ Quản lý: <b>'+payment.approver+'</b>'):'';
+  const accountantTag=payment.accountant?(payment.accountantTg?'\n📊 Kế toán: '+payment.accountant+' (@'+payment.accountantTg+')':'\n📊 Kế toán: <b>'+payment.accountant+'</b>'):(payment._extraNote||'');
   // Build mention line for tagging
-  const mentions=[payment.proposerTg?'@'+payment.proposerTg:null,payment.approverTg?'@'+payment.approverTg:null].filter(Boolean).join(' ');
+  const cfg3=getPayTgCfg();
+  const mentions=[payment.proposerTg?'@'+payment.proposerTg:null,payment.approverTg?'@'+payment.approverTg:null,cfg3.accountantTg?'@'+cfg3.accountantTg:null].filter(Boolean).join(' ');
   const text=msgPrefix+(mentions?'\n'+mentions:'')+'\n\n'
     +'🔖 <b>'+payment.code+'</b>\n'
     +'📝 '+payment.description+'\n'
@@ -347,33 +464,97 @@ async function notifyPayment(payment,msgPrefix){
     +proposerTag
     +approverTag
     +(payment.notes?'\n📌 '+payment.notes:'')
+    +approverTag
+    +accountantTag
     +'\n\n'+st.icon+' Trạng thái: <b>'+st.label+'</b>';
   try{
-    await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text,reply_markup:keyboard});
+    const sent=await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text,reply_markup:keyboard});
+    // Save latest message_id so user can reply to it for receipt
+    if(sent&&sent.message_id){
+      const list=getPayments();
+      const idx=list.findIndex(p=>p.id===payment.id);
+      if(idx>=0){
+        // Save original msgId on first send, always update tgLatestMsgId
+        const updates={tgLatestMsgId:sent.message_id};
+        if(!list[idx].tgMsgId)updates.tgMsgId=sent.message_id;
+        list[idx]={...list[idx],...updates};
+        lsSet('tt_payments',list);
+      }
+    }
   }catch(e){console.warn('notifyPayment:',e.message);}
 }
 
 async function notifyPaymentWithQR(payment){
   const cfg=getPayTgCfg();
   if(!cfg.token||!cfg.chatId)return;
-  // Send QR image via Telegram
+  if(!payment.bankCode||!payment.accountNo||!payment.amount)return;
   try{
-    const qrRes=await buildVietQR(payment.bankCode,payment.accountNo,payment.amount,payment.code+' '+(payment.description||''),payment.accountName);
-    if(qrRes.code==='00'&&qrRes.data&&qrRes.data.qrDataURL){
-      // Convert dataURL to blob and send as photo
-      const base64=qrRes.data.qrDataURL.split(',')[1];
-      const binary=atob(base64);
-      const arr=new Uint8Array(binary.length);
-      for(let i=0;i<binary.length;i++)arr[i]=binary.charCodeAt(i);
-      const blob=new Blob([arr],{type:'image/png'});
-      const fd=new FormData();
-      fd.append('chat_id',cfg.chatId);
-      fd.append('photo',blob,'qr_'+payment.code+'.png');
-      fd.append('caption','🔲 <b>Mã QR chuyển khoản</b>\n'+payment.code+' · '+formatMoney(payment.amount)+'\n🏦 '+(VIET_BANKS.find(b=>b.code===payment.bankCode)?.name||payment.bankCode)+' · '+payment.accountNo+'\n👤 '+payment.accountName);
-      fd.append('parse_mode','HTML');
-      await fetch('https://api.telegram.org/bot'+cfg.token+'/sendPhoto',{method:'POST',body:fd});
-    }
-  }catch(e){console.warn('QR send error:',e.message);}
+    // Method 1: Use VietQR direct image URL (no API call needed, always works)
+    // Format: https://img.vietqr.io/image/{bankCode}-{accountNo}-{template}.png?amount=X&addInfo=Y&accountName=Z
+    const info=encodeURIComponent((payment.code||'')+' '+(payment.description||''));
+    const name=encodeURIComponent(payment.accountName||'');
+    const qrUrl='https://img.vietqr.io/image/'+payment.bankCode+'-'+payment.accountNo+'-compact.png'
+      +'?amount='+Math.round(Number(payment.amount||0))
+      +'&addInfo='+info
+      +'&accountName='+name;
+    const bank=VIET_BANKS.find(b=>b.code===payment.bankCode);
+    const caption='🔲 <b>Mã QR chuyển khoản</b>\n'
+      +'🔖 '+payment.code+' · '+formatMoney(payment.amount)+'\n'
+      +'🏦 '+(bank?bank.name:payment.bankCode)+' · <code>'+payment.accountNo+'</code>\n'
+      +'👤 '+payment.accountName;
+    // Send as photo using URL directly
+    await tgCall(cfg.token,'sendPhoto',{
+      chat_id:cfg.chatId,
+      photo:qrUrl,
+      caption,
+      parse_mode:'HTML'
+    });
+  }catch(e){
+    // Fallback: send as text link if photo fails
+    try{
+      const info2=encodeURIComponent((payment.code||'')+' '+(payment.description||''));
+      const qrLink='https://img.vietqr.io/image/'+payment.bankCode+'-'+payment.accountNo+'-compact.png?amount='+payment.amount+'&addInfo='+info2;
+      await tgCall(cfg.token,'sendMessage',{
+        chat_id:cfg.chatId,parse_mode:'HTML',
+        text:'🔲 <b>Mã QR chuyển khoản</b>\n🔖 '+payment.code+' · '+formatMoney(payment.amount)+'\n\n<a href="'+qrLink+'">📎 Xem mã QR</a>'
+      });
+    }catch{}
+  }
+}
+
+async function notifyInvoiceImages(payment){
+  const cfg=getPayTgCfg();
+  if(!cfg.token||!cfg.chatId)return;
+  const invoices=payment.invoices||[];
+  if(!invoices.length)return;
+  const bank=VIET_BANKS.find(b=>b.code===payment.bankCode);
+  for(let i=0;i<invoices.length;i++){
+    const inv=invoices[i];
+    const isImg=/^data:image/.test(inv.data||'');
+    const caption='🧾 <b>Hoá đơn '+(i+1)+'/'+invoices.length+'</b> — đề xuất <b>'+payment.code+'</b>'
+      +'\n📝 '+payment.description
+      +'\n💰 <b>'+formatMoney(payment.amount)+'</b>'
+      +'\n🏦 '+(bank?bank.name:payment.bankCode||'')+' · '+payment.accountNo
+      +'\n👤 '+payment.proposer
+      +'\n📎 '+inv.name;
+    try{
+      const base64=inv.data.split(',')[1];
+      const mime=inv.data.split(';')[0].slice(5);
+      const formData=new FormData();
+      formData.append('chat_id',cfg.chatId);
+      formData.append('caption',caption);
+      formData.append('parse_mode','HTML');
+      // Convert base64 to Blob
+      const byteChars=atob(base64);
+      const byteArr=new Uint8Array(byteChars.length);
+      for(let j=0;j<byteChars.length;j++)byteArr[j]=byteChars.charCodeAt(j);
+      const blob=new Blob([byteArr],{type:mime});
+      formData.append(isImg?'photo':'document',blob,inv.name||('invoice'+(i+1)+(isImg?'.jpg':'.pdf')));
+      await fetch('https://api.telegram.org/bot'+cfg.token+'/'+(isImg?'sendPhoto':'sendDocument'),{
+        method:'POST',body:formData
+      });
+    }catch(e){console.warn('notifyInvoiceImages:',e.message);}
+  }
 }
 
 async function pollPaymentBot(){
@@ -384,18 +565,56 @@ async function pollPaymentBot(){
   try{
     const updates=await tgCall(cfg.token,'getUpdates?offset='+offset+'&timeout=0&limit=10');
     for(const u of updates){
+      // Always advance offset to avoid reprocessing
       lsSet(offsetKey,u.update_id+1);
 
-      // ── Auto-capture member ──
+      // Only process payment-related updates; skip task tracker callbacks
+      const cqCheck=u.callback_query;
+      if(cqCheck&&cqCheck.data&&!cqCheck.data.startsWith('pay_')){continue;}
+      // All pay_ callbacks (pay_sess_, pay_edit_, pay_del_, pay_approve etc.) pass through
+
+      // ── Auto-capture member from any message ──
       const pmsg=u.message;
       if(pmsg&&String(pmsg.chat?.id)===String(cfg.chatId)){
         if(pmsg.from&&pmsg.from.id)savePayMember(pmsg.from);
         const ptxt=(pmsg.text||'').trim();
+        const userId=pmsg.from?String(pmsg.from.id):'';
+        const userName=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'';
+
+        // ── Session / Conversation flow ──
+        const session=userId?getSession(userId):null;
+        if(session&&ptxt.toLowerCase()!=='hủy'&&ptxt.toLowerCase()!=='cancel'&&!ptxt.startsWith('/')){
+          const handled=await handlePaySession(cfg.token,cfg.chatId,userId,userName,pmsg,ptxt,session);
+          if(handled)continue;
+        }
+        // Also handle /payment prefix when user is in active template session
+        if(session&&session.flow==='add_template'&&ptxt.startsWith('/payment')&&ptxt.length>'/payment'.length){
+          const ptxtClean=ptxt.slice('/payment'.length).trim();
+          const handled=await handlePaySession(cfg.token,cfg.chatId,userId,userName,pmsg,ptxtClean,session);
+          if(handled)continue;
+        }
+
+        // ── Fallback: auto-detect filled template even without active session ──
+        // Detect if message looks like a filled payment template (has key: value lines)
+        // Support /payment prefix (user copies template with /payment header)
+        const ptxtNorm=ptxt.startsWith('/payment')&&ptxt.length>'/payment'.length?ptxt.slice('/payment'.length).trim():ptxt;
+        if(!session&&ptxtNorm.includes(':')&&
+          (ptxtNorm.toLowerCase().includes('nhà cung cấp')||ptxtNorm.toLowerCase().includes('số tiền'))&&
+          (ptxtNorm.toLowerCase().includes('số tk')||ptxtNorm.toLowerCase().includes('tên tk'))){
+          // Treat as add_template reply
+          const fakeSession={flow:'add_template',data:{proposer:userName,bankCode:'970432'}};
+          const handled2=await handlePaySession(cfg.token,cfg.chatId,userId,userName,pmsg,ptxtNorm,fakeSession);
+          if(handled2)continue;
+        }
+        if(ptxt.toLowerCase()==='hủy'||ptxt.toLowerCase()==='cancel'){
+          if(session){clearSession(userId);await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text:'❌ Đã hủy. Nhắn /payhelp để xem các lệnh.'}).catch(()=>{});}
+          continue;
+        }
 
         if(ptxt==='/payhelp'||ptxt==='/start'){
           const memberName=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'bạn';
           await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
-            text:'👋 Xin chào <b>'+memberName+'</b>! Đã ghi nhận tài khoản vào hệ thống.\n\n💳 <b>Thanh toán Bot</b>\n\nLệnh:\n/payment — Tạo đề xuất\n/paylist — Xem đề xuất chờ duyệt\n/members — Xem danh sách thành viên\n/payhelp — Trợ giúp'
+            text:'👋 Xin chào <b>'+memberName+'</b>!\n\n💳 <b>Menu Thanh toán:</b>\n\n/payment — ➕ Tạo đề xuất mới\n/sua — ✏️ Sửa đề xuất\n/xoa — 🗑 Xóa đề xuất\n/paylist — 📋 Xem đề xuất chờ duyệt\n/members — 👥 Thành viên\n\n💡 Nhắn <b>hủy</b> bất cứ lúc nào để thoát'
           }).catch(()=>{});
           continue;
         }
@@ -408,32 +627,121 @@ async function pollPaymentBot(){
           continue;
         }
 
-        // /receipt [payId] + photo → mark as paid with receipt
-        if(ptxt.startsWith('/receipt')){
-          const rParts=ptxt.split(' ');
-          const rId=rParts[1];
-          if(!rId){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'📎 Format: /receipt [ID đề xuất] + đính kèm ảnh ủy nhiệm chi'}).catch(()=>{});continue;}
-          const rIdx=getPayments().findIndex(p=>p.id===rId);
-          if(rIdx<0){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'❌ Không tìm thấy đề xuất: '+rId}).catch(()=>{});continue;}
-          const rPay=getPayments()[rIdx];
-          const hasPhoto=pmsg.photo&&pmsg.photo.length>0;
-          const hasDoc=pmsg.document&&pmsg.document.mime_type&&pmsg.document.mime_type.includes('image');
-          if(!hasPhoto&&!hasDoc){
-            await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
-              text:'📎 Vui lòng gửi lại kèm <b>ảnh ủy nhiệm chi</b>:\n<code>/receipt '+rId+'</code> + chọn ảnh'
-            }).catch(()=>{});continue;
+        // ── Sepay transaction parser ─────────────────────────────────────────────
+        // Detect forwarded Sepay messages (format: "--------- ID: XXXXXX ---------")
+        if(ptxt.includes('ID:')&&ptxt.includes('Tiền ra')&&ptxt.includes('Giao dịch lúc')){
+          // Parse Sepay format
+          const getField=(text,label)=>{
+            const re=new RegExp(label+'[: ]+([^\\n]+)','i');
+            const m=text.match(re);
+            return m?m[1].trim():'';
+          };
+          const tienRaRaw=getField(ptxt,'Tiền ra');
+          const tienRaNum=parseInt((tienRaRaw||'').replace(/[^0-9]/g,''))||0;
+
+          if(tienRaNum>0){
+            // Has outgoing transaction - try to match with approved payments
+            const noiDung=(getField(ptxt,'Nội dung thanh toán')||getField(ptxt,'Nội dung')||'').toLowerCase();
+            const taiKhoan=getField(ptxt,'Tài khoản chính').toLowerCase();
+            const thoiGian=getField(ptxt,'Giao dịch lúc');
+
+            const allPays=getPayments();
+            // Find matching approved payment
+            const matchIdx=allPays.findIndex(p=>{
+              if(p.status!=='approved'&&p.status!=='awaiting_receipt')return false;
+              // Match by: amount, account number, or description keywords
+              const amountMatch=parseInt(p.amount||0)===tienRaNum;
+              const accountMatch=p.accountNo&&noiDung.includes(p.accountNo.toLowerCase().slice(-4));
+              const codeMatch=noiDung.includes(p.code.toLowerCase())||noiDung.includes((p.code||'').toLowerCase());
+              const descWords=(p.description||'').toLowerCase().split(' ').filter(w=>w.length>3);
+              const descMatch=descWords.some(w=>noiDung.includes(w));
+              const nameMatch=p.accountName&&noiDung.includes(p.accountName.toLowerCase().replace(/ /g,'').slice(0,8));
+              return amountMatch||(accountMatch&&descMatch)||codeMatch||(amountMatch&&(nameMatch||descMatch));
+            });
+
+            if(matchIdx>=0){
+              const matched=allPays[matchIdx];
+              // ✅ Sepay xác nhận — tự động mark paid, không cần kế toán reply ảnh
+              const updated={...matched,status:'paid',
+                sepayId:getField(ptxt,'ID:').replace(/[-\s ]/g,''),
+                sepayTime:thoiGian,
+                sepayAmount:tienRaNum,
+                paidAt:new Date().toISOString(),
+                paidBy:'Sepay (tự động)',
+                lastActionAt:new Date().toISOString()
+              };
+              savePayments(allPays.map((p,i)=>i===matchIdx?updated:p));
+
+              // Thông báo hoàn tất
+              const bank3=VIET_BANKS.find(b=>b.code===matched.bankCode);
+              const accTgCfg=getPayTgCfg().accountantTg||'';
+              const tagLine3=[matched.proposerTg,matched.approverTg,accTgCfg].filter(Boolean).map(u=>'@'+u).join(' ');
+              const doneMsg={
+                chat_id:cfg.chatId,parse_mode:'HTML',
+                text:'💸 <b>Sepay xác nhận — Đã thanh toán!</b>'+(tagLine3?'\n'+tagLine3:'')
+                  +'\n\n🔖 <b>'+matched.code+'</b>\n📝 '+matched.description
+                  +'\n💰 <b>'+formatMoney(tienRaNum)+'</b>'
+                  +'\n🏦 '+(bank3?bank3.name:matched.bankCode)+' · <code>'+matched.accountNo+'</code>'
+                  +'\n👤 '+matched.accountName
+                  +(thoiGian?'\n⏰ '+thoiGian:'')
+                  +'\n\n✅ Quy trình thanh toán hoàn tất tự động qua Sepay.'
+              };
+              if(matched.tgMsgId)doneMsg.reply_to_message_id=matched.tgMsgId;
+              await tgCall(cfg.token,'sendMessage',doneMsg).catch(()=>
+                tgCall(cfg.token,'sendMessage',{...doneMsg,reply_to_message_id:undefined}).catch(()=>{})
+              );
+            } else {
+              // No match found - notify for manual check
+              const allApproved=allPays.filter(p=>p.status==='approved'||p.status==='awaiting_receipt');
+              if(allApproved.length>0){
+                await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+                  text:'⚠️ <b>Phát hiện tiền ra '+formatMoney(tienRaNum)+'</b> nhưng không khớp đề xuất nào.\n\n'
+                    +'Đề xuất đang chờ:\n'+allApproved.map(p=>'• <b>'+p.code+'</b> — '+formatMoney(p.amount)+' — '+p.description).join('\n')
+                }).catch(()=>{});
+              }
+            }
+            continue;
+          } else {
+            // Tiền vào — ignore hoặc log
+            continue;
           }
-          const fileId=hasPhoto?pmsg.photo[pmsg.photo.length-1].file_id:pmsg.document.file_id;
-          const receiptWho=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'';
-          const rUpdated={...rPay,status:'paid',receiptFileId:fileId,receiptBy:receiptWho,receiptAt:new Date().toISOString()};
-          savePayments(getPayments().map((p,i)=>i===rIdx?rUpdated:p));
-          const propTag=rUpdated.proposerTg?'\n👤 @'+rUpdated.proposerTg:'\n👤 '+(rUpdated.proposer||'');
-          const tagLine2=[rUpdated.proposerTg,rUpdated.approverTg,rUpdated.accountantTg].filter(Boolean).map(u=>'@'+u).join(' ');
-          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
-            text:'💳 <b>Hoàn tất! Đã nhận ủy nhiệm chi</b>'+(tagLine2?'\n'+tagLine2:'')+'\n\n🔖 <b>'+rUpdated.code+'</b>\n📝 '+rUpdated.description+'\n💰 <b>'+formatMoney(rUpdated.amount)+'</b>'+propTag+'\n\n✅ Quy trình thanh toán hoàn tất.\n🧾 Ủy nhiệm chi đã được lưu.'
-          }).catch(()=>{});
-          continue;
         }
+
+        // Auto-detect receipt: reply to proposal/request message + attachment
+        const hasPhoto=pmsg.photo&&pmsg.photo.length>0;
+        const hasDoc=pmsg.document&&pmsg.document.mime_type&&(pmsg.document.mime_type.includes('image')||pmsg.document.mime_type.includes('pdf'));
+        const replyToId=pmsg.reply_to_message?.message_id;
+
+        // Check if this is a reply with attachment to an awaiting_receipt payment
+        if((hasPhoto||hasDoc)&&replyToId){
+          const allPays=getPayments();
+          // Find payment whose tgMsgId or whose awaiting_receipt request matches reply
+          const rIdx=allPays.findIndex(p=>
+            (p.status==='awaiting_receipt'||p.status==='approved')&&
+            (String(p.tgMsgId)===String(replyToId)||
+             String(p.tgLatestMsgId)===String(replyToId)||
+             String(p.tgReceiptRequestMsgId)===String(replyToId))
+          );
+          if(rIdx>=0){
+            const rPay=allPays[rIdx];
+            const fileId=hasPhoto?pmsg.photo[pmsg.photo.length-1].file_id:pmsg.document.file_id;
+            const receiptWho=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'';
+            const rUpdated={...rPay,status:'paid',receiptFileId:fileId,receiptBy:receiptWho,receiptAt:new Date().toISOString()};
+            savePayments(allPays.map((p,i)=>i===rIdx?rUpdated:p));
+            const tagLine2=[rUpdated.proposerTg,rUpdated.approverTg,rUpdated.accountantTg].filter(Boolean).map(u=>'@'+u).join(' ');
+            const propTag=rUpdated.proposerTg?'\n👤 @'+rUpdated.proposerTg:'\n👤 '+(rUpdated.proposer||'');
+            await tgCall(cfg.token,'sendMessage',{
+              chat_id:cfg.chatId,parse_mode:'HTML',
+              reply_to_message_id:replyToId,
+              text:'💳 <b>Hoàn tất! Đã nhận ủy nhiệm chi</b>'+(tagLine2?'\n'+tagLine2:'')
+                +'\n\n🔖 <b>'+rUpdated.code+'</b>\n📝 '+rUpdated.description
+                +'\n💰 <b>'+formatMoney(rUpdated.amount)+'</b>'+propTag
+                +'\n\n✅ Quy trình thanh toán hoàn tất!'
+            }).catch(()=>{});
+            continue;
+          }
+        }
+
 
                 if(ptxt==='/paylist'){
           const all=getPayments();
@@ -444,52 +752,130 @@ async function pollPaymentBot(){
           continue;
         }
 
+        // Simple menu button triggers
+        if(ptxt==='/payment'||ptxt==='/them'){
+          if(userId){
+            setSession(userId,{flow:'add_template',data:{proposer:userName,bankCode:'970432'}});
+            await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+              reply_markup:{force_reply:true,selective:false,input_field_placeholder:'Điền vào form rồi gửi lại...'},
+              text:'💳 <b>Tạo đề xuất thanh toán</b>\n\nCopy form bên dưới, điền đầy đủ rồi gửi lại:\n\n'
+                +'<code>/payment\n'
+                +'Nhà cung cấp: \n'
+                +'Số tiền: \n'
+                +'Nội dung CK: \n'
+                +'Ngân hàng: \n'
+                +'Số TK: \n'
+                +'Tên TK: \n'
+                +'Ghi chú: </code>\n\n'
+                +'💡 <i>Ngân hàng: nhập tên (ACB, VCB, MB, TCB, VPB...) hoặc mã số\nSau khi xác nhận, QR chuyển khoản sẽ được gửi tự động.</i>\n\nNhắn <b>hủy</b> để thoát.'
+            }).catch(()=>{});
+          }
+          continue;
+        }
+        if(ptxt==='/sua'||ptxt==='/editpay'){
+          const pending=getPayments().filter(p=>p.status==='pending');
+          if(!pending.length){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'Không có đề xuất nào đang chờ duyệt để sửa.'}).catch(()=>{});continue;}
+          const kb={inline_keyboard:pending.slice(0,10).map(p=>[{text:'✏️ '+p.code+' · '+formatMoney(p.amount)+' · '+p.description.slice(0,25),callback_data:'pay_edit_start|'+p.id+'|'}])};
+          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text:'✏️ <b>Chọn đề xuất muốn sửa:</b>',reply_markup:kb}).catch(()=>{});
+          continue;
+        }
+        if(ptxt==='/xoa'||ptxt==='/delpay'){
+          const pending2=getPayments().filter(p=>p.status==='pending');
+          if(!pending2.length){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'Không có đề xuất nào đang chờ duyệt để xóa.'}).catch(()=>{});continue;}
+          const kb2={inline_keyboard:pending2.slice(0,10).map(p=>[{text:'🗑 '+p.code+' · '+formatMoney(p.amount)+' · '+p.description.slice(0,25),callback_data:'pay_del_confirm|'+p.id+'|'}])};
+          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text:'🗑 <b>Chọn đề xuất muốn xóa:</b>',reply_markup:kb2}).catch(()=>{});
+          continue;
+        }
         if(ptxt.startsWith('/payment')){
           const rows=ptxt.split('\n').map(r=>r.trim()).filter(Boolean);
           const data=rows.slice(1);
           if(!data.length){
-            const bankList=VIET_BANKS.slice(0,10).map(b=>b.code+' = '+b.name).join('\n');
             await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
-              text:'💳 <b>Tạo đề xuất thanh toán</b>\n\nGửi theo format:\n<code>/payment\nNgười đề xuất\nNhà cung cấp\nSố tiền\nNội dung CK\nMã ngân hàng\nSố tài khoản\nTên người thụ hưởng\nGhi chú (hoặc -)</code>\n\n<b>Mã ngân hàng thông dụng:</b>\n<code>'+bankList+'</code>'
+              text:'💡 Gõ <b>/payment</b> (không có gì thêm) để tạo đề xuất từng bước!\nHoặc gửi theo format:\n<code>/payment\nNhà cung cấp\nSố tiền\nNội dung CK\nMã ngân hàng\nSố tài khoản\nTên thụ hưởng</code>'
             }).catch(()=>{});
             continue;
           }
-          const proposer=data[0]||pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')):' ';
-          const supplier=data[1]&&data[1]!=='-'?data[1]:'';
-          const amount=data[2]?data[2].replace(/[^0-9]/g,''):'';
-          const description=data[3]&&data[3]!=='-'?data[3]:'';
-          const bankCode=data[4]&&data[4]!=='-'?data[4]:'970432';
-          const accountNo=data[5]&&data[5]!=='-'?data[5]:'';
-          const accountName=data[6]&&data[6]!=='-'?data[6].toUpperCase():'';
-          const notes=data[7]&&data[7]!=='-'?data[7]:'';
-          if(!proposer||!amount||!description||!accountNo||!accountName){
-            await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'❌ Thiếu thông tin bắt buộc. Gửi /payment để xem format.'}).catch(()=>{});
+        }
+
+        // ── /delpayment [CODE] — Xóa đề xuất ──
+        if(ptxt.startsWith('/delpayment')){
+          const code=ptxt.split(' ')[1]||'';
+          if(!code){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text:'🗑 Format: <code>/delpayment [MÃ ĐỀ XUẤT]</code>\nVí dụ: <code>/delpayment PT9XIQ7H</code>\n\nDùng /paylist để xem danh sách.'}).catch(()=>{});continue;}
+          const allP=getPayments();
+          const pIdx=allP.findIndex(p=>p.code===code.toUpperCase()||(p.id===code));
+          if(pIdx<0){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'❌ Không tìm thấy đề xuất: '+code}).catch(()=>{});continue;}
+          const pDel=allP[pIdx];
+          if(pDel.status!=='pending'){
+            await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text:'❌ Chỉ xóa được đề xuất đang <b>chờ duyệt</b>.\nĐề xuất này đang ở trạng thái: '+PAYMENT_STATUS[pDel.status]?.label}).catch(()=>{});
             continue;
           }
-          const newPay={
-            id:'pay_'+Date.now(),
-            code:genPaymentCode(),
-            proposer,supplier,amount,description,
-            bankCode,accountNo,accountName,notes,
-            status:'pending',
-            createdAt:new Date().toISOString(),
-          };
-          savePayments([...getPayments(),newPay]);
-          // Notify with inline buttons
-          await notifyPayment(newPay,'💳 <b>Đề xuất thanh toán mới từ Telegram!</b>').catch(()=>{});
-          // Send QR
-          await notifyPaymentWithQR(newPay).catch(()=>{});
+          savePayments(allP.filter((_,i)=>i!==pIdx));
+          const delWho=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'';
           await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
-            text:'✅ Đã tạo đề xuất <b>'+newPay.code+'</b> — '+formatMoney(newPay.amount)+'\nData đã được sync vào tool.'
+            text:'🗑 <b>Đã xóa đề xuất</b>\n\n🔖 <b>'+pDel.code+'</b>\n📝 '+pDel.description+'\n💰 <b>'+formatMoney(pDel.amount)+'</b>\n\n👆 Xóa bởi: <b>'+delWho+'</b>'
           }).catch(()=>{});
           continue;
         }
+
+        // ── /editpayment [CODE] — Sửa đề xuất ──
+        if(ptxt.startsWith('/editpayment')){
+          const rows=ptxt.split('\n').map(r=>r.trim()).filter(Boolean);
+          const code=(rows[0].split(' ')[1]||'').toUpperCase();
+          const data=rows.slice(1);
+          if(!code||!data.length){
+            await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+              text:'✏️ <b>Sửa đề xuất</b>\n\nFormat:\n<code>/editpayment [MÃ]\nNhà cung cấp (hoặc -)\nSố tiền (hoặc -)\nNội dung CK (hoặc -)\nMã ngân hàng (hoặc -)\nSố tài khoản (hoặc -)\nTên thụ hưởng (hoặc -)\nGhi chú (hoặc -)</code>\n\nVí dụ:\n<code>/editpayment PT9XIQ7H\n-\n200000\nThanh toán dịch vụ mới\n-\n-\n-\n-</code>'
+            }).catch(()=>{});
+            continue;
+          }
+          const allP2=getPayments();
+          const pIdx2=allP2.findIndex(p=>p.code===code||p.id===code);
+          if(pIdx2<0){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'❌ Không tìm thấy đề xuất: '+code}).catch(()=>{});continue;}
+          const orig=allP2[pIdx2];
+          if(orig.status!=='pending'){
+            await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text:'❌ Chỉ sửa được đề xuất đang <b>chờ duyệt</b>.\nTrạng thái hiện tại: '+PAYMENT_STATUS[orig.status]?.label}).catch(()=>{});
+            continue;
+          }
+          const edited={...orig,
+            supplier:   data[0]&&data[0]!=='-'?data[0]:orig.supplier,
+            amount:     data[1]&&data[1]!=='-'?data[1].replace(/[^0-9]/g,''):orig.amount,
+            description:data[2]&&data[2]!=='-'?data[2]:orig.description,
+            bankCode:   data[3]&&data[3]!=='-'?data[3]:orig.bankCode,
+            accountNo:  data[4]&&data[4]!=='-'?data[4]:orig.accountNo,
+            accountName:data[5]&&data[5]!=='-'?data[5].toUpperCase():orig.accountName,
+            notes:      data[6]&&data[6]!=='-'?data[6]:orig.notes,
+            updatedAt:new Date().toISOString(),
+          };
+          savePayments(allP2.map((p,i)=>i===pIdx2?edited:p));
+          const editWho=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'';
+          const bank2=VIET_BANKS.find(b=>b.code===edited.bankCode);
+          await notifyPayment(edited,'✏️ <b>Đề xuất đã được cập nhật!</b>').catch(()=>{});
+          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+            text:'✅ <b>Đã sửa đề xuất '+edited.code+'</b>\n\n📝 '+edited.description+'\n💰 <b>'+formatMoney(edited.amount)+'</b>\n🏦 '+(bank2?bank2.name:edited.bankCode)+' · '+edited.accountNo+'\n👤 '+edited.accountName+'\n\n✍️ Sửa bởi: <b>'+editWho+'</b>'
+          }).catch(()=>{});
+          continue;
+        }
+
+        // ── /payinfo [CODE] — Xem chi tiết đề xuất ──
+        if(ptxt.startsWith('/payinfo')){
+          const code=(ptxt.split(' ')[1]||'').toUpperCase();
+          if(!code){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text:'🔍 Format: <code>/payinfo [MÃ]</code>'}).catch(()=>{});continue;}
+          const allP3=getPayments();
+          const found=allP3.find(p=>p.code===code||p.id===code);
+          if(!found){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'❌ Không tìm thấy: '+code}).catch(()=>{});continue;}
+          const st3=PAYMENT_STATUS[found.status]||PAYMENT_STATUS.pending;
+          const bank3=VIET_BANKS.find(b=>b.code===found.bankCode);
+          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+            text:'🔍 <b>Chi tiết đề xuất</b>\n\n🔖 <b>'+found.code+'</b>\n📝 '+found.description+'\n💰 <b>'+formatMoney(found.amount)+'</b>\n🏢 '+(found.supplier||'—')+'\n🏦 '+(bank3?bank3.name:found.bankCode)+' · <code>'+found.accountNo+'</code>\n👤 '+found.accountName+(found.proposer?'\n\n👤 Đề xuất bởi: <b>'+found.proposer+'</b>':'')+(found.approver?'\n✅ Duyệt bởi: <b>'+found.approver+'</b>':'')+(found.accountant?'\n📊 KT: <b>'+found.accountant+'</b>':'')+(found.notes?'\n📌 '+found.notes:'')+'\n\n'+st3.icon+' <b>'+st3.label+'</b>\n📅 '+new Date(found.createdAt).toLocaleDateString('vi-VN')
+          }).catch(()=>{});
+          continue;
+        }
+
       }
 
       // ── Handle callback_query ──
       const cq=u.callback_query;
       if(!cq||String(cq.message?.chat?.id)!==String(cfg.chatId))continue;
-      await tgCall(cfg.token,'answerCallbackQuery',{callback_query_id:cq.id}).catch(()=>{});
       const parts=(cq.data||'').split('|');
       if(parts.length<2)continue;
       const action=parts[0];
@@ -499,22 +885,141 @@ async function pollPaymentBot(){
 
       // Auto-capture member from button press too
       if(cq.from)savePayMember(cq.from);
-      // Auth check: only designated approver can act
+      // Auth check: only designated approver can act (skip for session callbacks)
       const presserUsername=(cq.from?.username||'').toLowerCase();
       const presserName=cq.from?((cq.from.first_name||'')+(cq.from.last_name?' '+cq.from.last_name:'')).trim():'';
-      if(requiredTg&&presserUsername!==requiredTg.toLowerCase()){
+      if(!action.startsWith('pay_sess_')&&requiredTg&&presserUsername!==requiredTg.toLowerCase()){
         await tgCall(cfg.token,'answerCallbackQuery',{callback_query_id:cq.id,text:'🔒 Chỉ @'+requiredTg+' mới được duyệt đề xuất này!',show_alert:true}).catch(()=>{});
         continue;
       }
+      // Answer callback once here (not duplicated)
       await tgCall(cfg.token,'answerCallbackQuery',{callback_query_id:cq.id}).catch(()=>{});
 
-      const payments=getPayments();
-      const pidx=payments.findIndex(p=>p.id===payId);
-      if(pidx<0)continue;
-      // Map action to new status
+      // Read fresh from localStorage to get latest data
+      const freshCats2=lsGet('tt_categories');if(freshCats2)S.categories=freshCats2;
+
+      // ── Session callbacks (pay_sess_*) use payId as userId, NOT payment ID — handle before pidx check ──
+      if(action==='pay_sess_bank'){
+        // User selected a bank from keyboard
+        const sessUserId=payId; // payId field reused for userId
+        const bankCode=requiredTg; // requiredTg field reused for bankCode
+        const sess=getSession(sessUserId);
+        if(sess&&sess.flow==='add'){
+          sess.data.bankCode=bankCode;
+          setSession(sessUserId,{...sess,step:'accountNo',data:sess.data});
+          const bank=VIET_BANKS.find(b=>b.code===bankCode);
+          await tgCall(cfg.token,'answerCallbackQuery',{callback_query_id:cq.id,text:'✅ Đã chọn '+( bank?bank.name:bankCode)}).catch(()=>{});
+          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+            reply_markup:{force_reply:true,input_field_placeholder:'0123456789...'},
+            text:'<b>Bước 5/6:</b> Số tài khoản ngân hàng?'
+          }).catch(()=>{});
+        }
+        continue;
+      }
+      if(action==='pay_sess_confirm'){
+        const sessUserId=payId;
+        const choice=requiredTg; // ok / redo / cancel
+        await tgCall(cfg.token,'answerCallbackQuery',{callback_query_id:cq.id}).catch(()=>{});
+        const sess=getSession(sessUserId);
+        if(choice==='redo'){
+          // Re-send the template for correction
+          if(sess&&sess.data){
+            const d=sess.data;
+            const bank=VIET_BANKS.find(b=>b.code===d.bankCode);
+            const bankList=VIET_BANKS.slice(0,8).map(b=>'  '+b.name+': '+b.code).join('\n');
+            setSession(sessUserId,{flow:'add_template',data:d});
+            await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+              reply_markup:{force_reply:true,selective:false,input_field_placeholder:'Điền vào template rồi gửi...'},
+              text:'✏️ <b>Điền lại thông tin:</b>\n\n'
+                +'<code>Nhà cung cấp: '+(d.supplier||'')+'\n'
+                +'Số tiền: '+(d.amount||'')+'\n'
+                +'Nội dung CK: '+(d.description||'')+'\n'
+                +'Ngân hàng: '+(bank?bank.name:d.bankCode||'')+'\n'
+                +'Số TK: '+(d.accountNo||'')+'\n'
+                +'Tên TK: '+(d.accountName||'')+'\n'
+                +'Ghi chú: '+(d.notes||'')+'</code>\n\n'
+                +'📋 Mã ngân hàng:\n<code>'+bankList+'</code>'
+            }).catch(()=>{});
+          }
+          continue;
+        }
+        clearSession(sessUserId);
+        if(choice==='ok'&&sess&&sess.data){
+          const d=sess.data;
+          const newPay2={id:'pay_'+Date.now(),code:genPaymentCode(),
+            proposer:d.proposer||presserName,proposerTg:presserUsername,
+            supplier:d.supplier,amount:d.amount,description:d.description,
+            bankCode:d.bankCode||'970432',accountNo:d.accountNo,accountName:d.accountName,
+            notes:d.notes||'',status:'pending',createdAt:new Date().toISOString()};
+          savePayments([...getPayments(),newPay2]);
+          await notifyPayment(newPay2,'💳 <b>Đề xuất thanh toán mới!</b>').catch(()=>{});
+          // Always send QR right after creating
+          await notifyPaymentWithQR(newPay2).catch(()=>{});
+          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+            text:'✅ Đã tạo <b>'+newPay2.code+'</b> · '+formatMoney(newPay2.amount)+'\n🔲 Mã QR đã được gửi bên trên.\n✅ Đã đồng bộ vào hệ thống.'
+          }).catch(()=>{});
+        } else {
+          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'❌ Đã hủy.'}).catch(()=>{});
+        }
+        continue;
+      }
+      if(action==='pay_edit_start'){
+        await tgCall(cfg.token,'answerCallbackQuery',{callback_query_id:cq.id}).catch(()=>{});
+        const editPay=getPayments().find(p=>p.id===payId);
+        if(!editPay){continue;}
+        const editUserId=String(cq.from?.id||'');
+        setSession(editUserId,{flow:'edit_template',data:{orig:editPay}});
+        const bank=VIET_BANKS.find(b=>b.code===editPay.bankCode);
+        // Send pre-filled template — user just edits what they want to change
+        await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+          reply_markup:{force_reply:true,selective:false,input_field_placeholder:'Sửa rồi gửi lại...'},
+          text:'✏️ <b>Sửa đề xuất '+editPay.code+' — Chỉnh sửa rồi gửi lại:</b>\n\n'
+            +'<code>Nhà cung cấp: '+editPay.supplier+'\n'
+            +'Số tiền: '+editPay.amount+'\n'
+            +'Nội dung CK: '+editPay.description+'\n'
+            +'Ngân hàng: '+(bank?bank.name:editPay.bankCode)+'\n'
+            +'Số TK: '+editPay.accountNo+'\n'
+            +'Tên TK: '+editPay.accountName+'\n'
+            +'Ghi chú: '+(editPay.notes||'')+'</code>\n\n'
+            +'💡 Sửa trực tiếp vào dòng cần thay đổi, giữ nguyên các dòng khác.'
+        }).catch(()=>{});
+        continue;
+      }
+      if(action==='pay_del_confirm'){
+        await tgCall(cfg.token,'answerCallbackQuery',{callback_query_id:cq.id}).catch(()=>{});
+        const delPay=getPayments().find(p=>p.id===payId);
+        if(!delPay){continue;}
+        // Ask confirmation
+        const confKb={inline_keyboard:[[
+          {text:'✅ Xác nhận xóa',callback_data:'pay_del_ok|'+payId+'|'},
+          {text:'❌ Không',callback_data:'pay_del_cancel|'+payId+'|'},
+        ]]};
+        await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',reply_markup:confKb,
+          text:'⚠️ Xác nhận xóa đề xuất?\n\n🔖 <b>'+delPay.code+'</b>\n📝 '+delPay.description+'\n💰 <b>'+formatMoney(delPay.amount)+'</b>'
+        }).catch(()=>{});
+        continue;
+      }
+      if(action==='pay_del_ok'){
+        await tgCall(cfg.token,'answerCallbackQuery',{callback_query_id:cq.id,text:'🗑 Đã xóa!'}).catch(()=>{});
+        const allPD=getPayments();
+        const dIdx=allPD.findIndex(p=>p.id===payId);
+        if(dIdx>=0){
+          const dPay=allPD[dIdx];
+          savePayments(allPD.filter((_,i)=>i!==dIdx));
+          await tgCall(cfg.token,'editMessageReplyMarkup',{chat_id:cfg.chatId,message_id:cq.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+            text:'🗑 <b>Đã xóa đề xuất '+dPay.code+'</b>\n📝 '+dPay.description+'\n💰 '+formatMoney(dPay.amount)+'\n\nXóa bởi: <b>'+presserName+'</b>'
+          }).catch(()=>{});
+        }
+        continue;
+      }
+      if(action==='pay_del_cancel'){
+        await tgCall(cfg.token,'answerCallbackQuery',{callback_query_id:cq.id,text:'Đã hủy'}).catch(()=>{});
+        await tgCall(cfg.token,'editMessageReplyMarkup',{chat_id:cfg.chatId,message_id:cq.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+        continue;
+      }
+
       const statusMap={
-        pay_acc_approve:'acc_approved',
-        pay_acc_reject:'acc_rejected',
         pay_approve:'approved',
         pay_reject:'rejected',
         pay_paid:'awaiting_receipt',
@@ -522,15 +1027,30 @@ async function pollPaymentBot(){
       const newStatus=statusMap[action];
       if(!newStatus)continue;
 
+      // Only now do we need a real payment ID lookup
+      const payments=getPayments();
+      const pidx=payments.findIndex(p=>p.id===payId);
+      if(pidx<0){
+        await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'❌ Không tìm thấy đề xuất: '+payId}).catch(()=>{});
+        continue;
+      }
+
       const updated={...payments[pidx],status:newStatus,
-        approver:action.startsWith('pay_acc_')?payments[pidx].approver:(payments[pidx].approver||presserName),
-        approverTg:action.startsWith('pay_acc_')?payments[pidx].approverTg:(payments[pidx].approverTg||presserUsername),
-        accountant:action.startsWith('pay_acc_')?presserName:payments[pidx].accountant,
-        accountantTg:action.startsWith('pay_acc_')?presserUsername:payments[pidx].accountantTg,
+        approver:(action==='pay_approve'||action==='pay_reject')?presserName:(payments[pidx].approver||''),
+        approverTg:(action==='pay_approve'||action==='pay_reject')?presserUsername:(payments[pidx].approverTg||''),
+        accountant:(action==='pay_paid')?presserName:(payments[pidx].accountant||''),
+        accountantTg:(action==='pay_paid')?presserUsername:(payments[pidx].accountantTg||''),
         lastActionAt:new Date().toISOString(),lastActionBy:presserName};
       savePayments(payments.map((p,i)=>i===pidx?updated:p));
       const st=PAYMENT_STATUS[newStatus];
-      await tgCall(cfg.token,'editMessageReplyMarkup',{chat_id:cfg.chatId,message_id:cq.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+      // Show processed status on old message, remove keyboard
+      await tgCall(cfg.token,'editMessageText',{
+        chat_id:cfg.chatId,message_id:cq.message.message_id,parse_mode:'HTML',
+        text:(cq.message.text||'')+'\n\n'+st.icon+' <i>'+st.label+' — '+presserName+'</i>',
+        reply_markup:{inline_keyboard:[]}
+      }).catch(()=>{
+        tgCall(cfg.token,'editMessageReplyMarkup',{chat_id:cfg.chatId,message_id:cq.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+      })
 
       const propTag2=updated.proposerTg?'\n👤 @'+updated.proposerTg+(updated.proposer?' ('+updated.proposer+')':''):'\n👤 '+(updated.proposer||'');
       const apvTag2=updated.approverTg?'\n✓ GĐ: @'+updated.approverTg+(updated.approver?' ('+updated.approver+')':''):(updated.approver?'\n✓ GĐ: '+updated.approver:'');
@@ -539,23 +1059,46 @@ async function pollPaymentBot(){
 
       // If GĐ approved → re-send with "Đã thanh toán" button
       if(newStatus==='approved'){
-        await notifyPayment(updated,'✅ <b>Giám đốc đã duyệt — chờ thanh toán!</b>').catch(()=>{});
+        // Tag kế toán để soạn lệnh
+        const accTg2=getPayTgCfg().accountantTg||'';
+        const accMention=accTg2?'\n📊 @'+accTg2+' — kế toán soạn lệnh chuyển khoản và chờ GĐ duyệt ngân hàng':'';
+        await notifyPayment({...updated,_extraNote:accMention},'✅ <b>Quản lý đã duyệt!</b>').catch(()=>{});
       }
-      // If "Đã thanh toán" pressed → ask for receipt
+      // If "Đã thanh toán" pressed → reply to original message asking for receipt
       else if(newStatus==='awaiting_receipt'){
-        await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
-          text:'🧾 <b>Yêu cầu ủy nhiệm chi</b>'+(tagLine?'\n'+tagLine:'')+'\n\n🔖 <b>'+updated.code+'</b>\n💰 <b>'+formatMoney(updated.amount)+'</b>'+propTag2+accTag2+apvTag2+'\n\n📎 Vui lòng <b>gửi ảnh/file ủy nhiệm chi</b> vào đây để hoàn tất quy trình.\nDùng lệnh: <code>/receipt '+updated.id+'</code> + đính kèm ảnh'
-        }).catch(()=>{});
+        const receiptMsg={
+          chat_id:cfg.chatId,
+          parse_mode:'HTML',
+          text:'🧾 <b>Kế toán: Gửi ủy nhiệm chi để hoàn tất</b>'+(tagLine?'\n'+tagLine:'')
+            +'\n\n🔖 <b>'+updated.code+'</b>\n📝 '+updated.description+'\n💰 <b>'+formatMoney(updated.amount)+'</b>'
+            +propTag2+accTag2+apvTag2
+            +'\n\n✅ Quản lý đã duyệt. GĐ đã duyệt ngân hàng.'
+            +'\n📎 Reply tin nhắn này và đính kèm ảnh/PDF ủy nhiệm chi để hoàn tất quy trình.',
+          reply_markup:{force_reply:true,selective:false,input_field_placeholder:'Đính kèm ảnh ủy nhiệm chi...'}
+        };
+        // Try to reply to original proposal message; fallback to normal send if fails
+        let receiptSent=null;
+        if(updated.tgMsgId||updated.tgLatestMsgId){
+          const replyId=updated.tgLatestMsgId||updated.tgMsgId;
+          receiptSent=await tgCall(cfg.token,'sendMessage',{...receiptMsg,reply_to_message_id:replyId}).catch(()=>null);
+        }
+        // Fallback: send without reply if reply failed or no msgId
+        if(!receiptSent){
+          receiptSent=await tgCall(cfg.token,'sendMessage',receiptMsg).catch(()=>null);
+        }
+        // Save receipt-request msgId — replies to THIS message are auto-detected
+        if(receiptSent&&receiptSent.message_id){
+          const pList=getPayments();
+          const pIdx2=pList.findIndex(p=>p.id===updated.id);
+          if(pIdx2>=0){pList[pIdx2]={...pList[pIdx2],tgReceiptRequestMsgId:receiptSent.message_id,tgLatestMsgId:receiptSent.message_id};lsSet('tt_payments',pList);}
+        }
       }
       // Other statuses → normal notification
       else {
         await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
           text:st.icon+' <b>'+st.label+'</b>'+(tagLine?'\n'+tagLine:'')+'\n\n🔖 <b>'+updated.code+'</b>\n📝 '+updated.description+'\n💰 <b>'+formatMoney(updated.amount)+'</b>'+propTag2+accTag2+apvTag2+'\n\n👆 Xử lý bởi: <b>'+presserName+'</b>'
         }).catch(()=>{});
-        // If KT approved → re-send with GĐ approval buttons
-        if(newStatus==='acc_approved'){
-          await notifyPayment(updated,'📋 <b>Kế toán đã duyệt — chờ Giám đốc phê duyệt!</b>').catch(()=>{});
-        }
+
       }
     }
   }catch(e){}
@@ -581,6 +1124,7 @@ async function syncPush(){
       categories:S.categories,
       payments:getPayments(),
       payMembers:getPayMembers(),
+      payTgCfg:getPayTgCfg(),
       savedAt:new Date().toISOString()
     };
     const res=await fetch('https://api.jsonbin.io/v3/b/'+cfg.binId,{
@@ -615,6 +1159,7 @@ async function syncPull(){
     lsSet('tt_categories',data.categories);
     if(Array.isArray(data.payments))lsSet('tt_payments',data.payments);
     if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
+    if(data.payTgCfg&&data.payTgCfg.token)lsSet('tt_pay_tg_cfg',data.payTgCfg);
     if(data.savedAt)lsSet('tt_sync_lastpush',new Date(data.savedAt).getTime());
     // setState triggers render() which will call getPayments()/getPayMembers() fresh from localStorage
     setState({syncStatus:'ok',syncMsg:'Đã đồng bộ '+new Date().toLocaleTimeString('vi-VN')+'  ('+
@@ -627,7 +1172,7 @@ async function syncPull(){
 }
 
 async function syncCreateBin(apiKey){
-  const data={tasks:S.tasks||[],categories:S.categories||[],payments:getPayments(),payMembers:getPayMembers(),savedAt:new Date().toISOString()};
+  const data={tasks:S.tasks||[],categories:S.categories||[],payments:getPayments(),payMembers:getPayMembers(),payTgCfg:getPayTgCfg(),savedAt:new Date().toISOString()};
   const res=await fetch('https://api.jsonbin.io/v3/b',{
     method:'POST',
     headers:{'Content-Type':'application/json','X-Master-Key':apiKey,'X-Bin-Name':'TaskTracker','X-Bin-Private':'true'},
@@ -1166,7 +1711,7 @@ function startBotPolling(){
   function claimLeader(){
     const now=Date.now();
     const lock=lsGet('tt_poll_lock');
-    if(lock&&lock.id!==tabId&&(now-lock.ts)<5000){amLeader=false;return false;}
+    if(lock&&lock.id!==tabId&&(now-lock.ts)<3000){amLeader=false;return false;}
     amLeader=true;
     lsSet('tt_poll_lock',{id:tabId,ts:now});
     bc.postMessage({type:'claim',id:tabId});
@@ -1193,9 +1738,9 @@ function startBotPolling(){
     }finally{isPolling=false;}
   }
 
-  // Poll every 3 seconds
-  setTimeout(()=>claimLeader(),Math.random()*1000);
-  setInterval(doPoll,3000);
+  // Poll every 1.5 seconds for faster response
+  setTimeout(()=>claimLeader(),Math.random()*500);
+  setInterval(doPoll,1500);
 
   // Poll immediately when tab becomes visible
   document.addEventListener('visibilitychange',()=>{
@@ -1549,7 +2094,7 @@ function render(){
 
 // ─── Export / Import ────────────────────────────────────────────────────────
 function exportData(){
-  const data={tasks:S.tasks,categories:S.categories,payments:getPayments(),payMembers:getPayMembers(),exportedAt:new Date().toISOString()};
+  const data={tasks:S.tasks,categories:S.categories,payments:getPayments(),payMembers:getPayMembers(),payTgCfg:getPayTgCfg(),exportedAt:new Date().toISOString()};
   const json=JSON.stringify(data,null,2);
   const blob=new Blob([json],{type:'application/json'});
   const url=URL.createObjectURL(blob);
@@ -1577,6 +2122,7 @@ function importData(){
       lsSet('tt_categories',data.categories);
       if(Array.isArray(data.payments))lsSet('tt_payments',data.payments);
       if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
+      if(data.payTgCfg&&data.payTgCfg.token)lsSet('tt_pay_tg_cfg',data.payTgCfg);
       showToast('✅ Đã import '+data.tasks.length+' task'+(data.payments?' + '+data.payments.length+' đề xuất':'')+'!');
       render();
     }catch(e){showToast('❌ Lỗi đọc file: '+e.message,false);}
@@ -2126,13 +2672,11 @@ function renderReminderModal(){
 
 // ─── Payment Proposal Feature ─────────────────────────────────────────────────
 const PAYMENT_STATUS={
-  pending:      {label:'Chờ kế toán duyệt', bg:'#FFFBEB',c:'#D97706',border:'#FDE68A',icon:'⏳'},
-  acc_approved: {label:'KT đã duyệt — Chờ GĐ',bg:'#F0FDF4',c:'#15803D',border:'#BBF7D0',icon:'📋'},
-  acc_rejected: {label:'KT từ chối',          bg:'#FEF2F2',c:'#DC2626',border:'#FECACA',icon:'❌'},
-  approved:     {label:'GĐ đã duyệt',         bg:'#ECFDF5',c:'#059669',border:'#A7F3D0',icon:'✅'},
-  rejected:     {label:'GĐ từ chối',           bg:'#FEF2F2',c:'#DC2626',border:'#FECACA',icon:'❌'},
-  awaiting_receipt:{label:'Chờ ủy nhiệm chi',  bg:'#EFF6FF',c:'#2563EB',border:'#BFDBFE',icon:'🧾'},
-  paid:         {label:'Đã thanh toán',        bg:'#E0F2FE',c:'#0369A1',border:'#BAE6FD',icon:'💳'},
+  pending:         {label:'Chờ quản lý duyệt',  bg:'#FFFBEB',c:'#D97706',border:'#FDE68A',icon:'⏳'},
+  approved:        {label:'Quản lý đã duyệt',    bg:'#F0FDF4',c:'#15803D',border:'#BBF7D0',icon:'✅'},
+  rejected:        {label:'Quản lý từ chối',      bg:'#FEF2F2',c:'#DC2626',border:'#FECACA',icon:'❌'},
+  awaiting_receipt:{label:'Chờ kế toán gửi UNC', bg:'#EFF6FF',c:'#2563EB',border:'#BFDBFE',icon:'🧾'},
+  paid:            {label:'Hoàn tất',             bg:'#ECFDF5',c:'#059669',border:'#A7F3D0',icon:'💳'},
 };
 
 function formatMoney(n){
@@ -2280,7 +2824,10 @@ function renderPaymentsView(mobile){
         p.approver?div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['✓ '+(p.approver||'—')]):null,
       ].filter(Boolean)),
       div({style:{fontSize:11,color:'var(--text3)'}},['🏦 '+(bank?bank.name:p.bankCode||'—')+' · '+p.accountNo+(p.accountName?' · '+p.accountName:'')]),
-      p.receiptFileId?div({style:{fontSize:11,color:'#0369a1',background:'#e0f2fe',border:'1px solid #bae6fd',borderRadius:4,padding:'2px 7px',display:'inline-block',marginTop:4}},['🧾 Đã có ủy nhiệm chi']):null,
+      div({style:{display:'flex',gap:6,marginTop:4,flexWrap:'wrap'}},[
+        p.receiptFileId?div({style:{fontSize:11,color:'#0369a1',background:'#e0f2fe',border:'1px solid #bae6fd',borderRadius:4,padding:'2px 7px'}},['🧾 Ủy nhiệm chi']):null,
+        (p.invoices&&p.invoices.length)?div({style:{fontSize:11,color:'#065f46',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:4,padding:'2px 7px'}},['📎 '+p.invoices.length+' hoá đơn']):null,
+      ].filter(Boolean)),
     ]);
     card.addEventListener('click',()=>openPaymentModal(p));
     wrap.appendChild(card);
@@ -2339,10 +2886,8 @@ function renderPaymentModal(){
   // Status select (for approver)
   const statusSel=el('select',{className:'input',style:{background:'white'}},[
     el('option',{value:'pending',selected:form.status==='pending'},['⏳ Chờ kế toán duyệt']),
-    el('option',{value:'acc_approved',selected:form.status==='acc_approved'},['📋 KT đã duyệt — Chờ GĐ']),
-    el('option',{value:'acc_rejected',selected:form.status==='acc_rejected'},['❌ KT từ chối']),
-    el('option',{value:'approved',selected:form.status==='approved'},['✅ GĐ đã duyệt']),
-    el('option',{value:'rejected',selected:form.status==='rejected'},['❌ GĐ từ chối']),
+    el('option',{value:'approved',selected:form.status==='approved'},['✅ Quản lý đã duyệt']),
+    el('option',{value:'rejected',selected:form.status==='rejected'},['❌ Quản lý từ chối']),
     el('option',{value:'awaiting_receipt',selected:form.status==='awaiting_receipt'},['🧾 Chờ ủy nhiệm chi']),
     el('option',{value:'paid',selected:form.status==='paid'},['💳 Đã thanh toán']),
   ]);
@@ -2407,7 +2952,7 @@ function renderPaymentModal(){
       };
       return div({style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}},[
         makePersonField('👤 NGƯỜI ĐỀ XUẤT *','proposer','proposerTg'),
-        makePersonField('✓ NGƯỜI DUYỆT','approver','approverTg'),
+        makePersonField('✅ QUẢN LÝ VẬN HÀNH (người duyệt)','approver','approverTg'),
       ]);
     })(),
 
@@ -2455,8 +3000,10 @@ function renderPaymentModal(){
       qrDiv,
     ]),
 
+    // ── Invoice upload section (chỉ hiện khi đề xuất đã tồn tại) ──
+
     // Footer buttons
-    div({style:{display:'flex',gap:8,paddingTop:'1rem',borderTop:'1px solid var(--border)',flexWrap:'wrap'}},[
+    div({style:{display:'flex',gap:8,paddingTop:'1rem',borderTop:'1px solid var(--border)',flexWrap:'wrap'},'data-footer':'1'},[
       !isNew?btn({className:'btn btn-danger',onClick:()=>{
         if(!confirm('Xóa đề xuất này?'))return;
         savePayments(getPayments().filter(p=>p.id!==form.id));
@@ -2479,36 +3026,158 @@ function renderPaymentModal(){
         // Notify Telegram
         const msgPrefix=cur.isNew?'💳 <b>Đề xuất thanh toán mới!</b>':'🔄 <b>Cập nhật đề xuất thanh toán</b>';
         notifyPayment(saved,msgPrefix).catch(()=>{});
-        // If new, also send QR image
+        // If new, also send QR + invoice images
         if(cur.isNew&&saved.bankCode&&saved.accountNo&&saved.amount){
           notifyPaymentWithQR(saved).catch(()=>{});
+        }
+        // Send invoice images attached by staff
+        if(cur.isNew&&saved.invoices&&saved.invoices.length){
+          notifyInvoiceImages(saved).catch(()=>{});
         }
         setState({modal:null,modalData:null,activeView:'payments'});
       }},[isNew?'Tạo đề xuất':'Lưu thay đổi']),
     ]),
   ]);
+  // Invoice section — built separately to avoid spread syntax issues
+  (()=>{
+
+      const sec=div({style:{marginBottom:13,background:'var(--bg)',borderRadius:'var(--r8)',padding:'12px 14px',border:'1px solid var(--border)'}},[]);
+      sec.appendChild(div({style:{fontSize:11,fontWeight:700,color:'var(--text2)',marginBottom:10,textTransform:'uppercase',letterSpacing:'.04em'}},['🧾 Hoá đơn / Chứng từ']));
+
+      // Preview existing invoices
+      const invoices=form.invoices||[];
+      const previewWrap=div({style:{display:'flex',flexWrap:'wrap',gap:8,marginBottom:invoices.length?10:0}},[]);
+      invoices.forEach((inv,idx)=>{
+        const isImg=/^data:image/.test(inv.data||'');
+        const isPdf=/^data:application\/pdf/.test(inv.data||'');
+        const thumb=div({style:{position:'relative',display:'inline-flex',flexDirection:'column',alignItems:'center',gap:3}},[]);
+        if(isImg){
+          const imgEl=el('img',{src:inv.data,style:{width:72,height:72,objectFit:'cover',borderRadius:6,border:'1px solid var(--border)',cursor:'pointer'}});
+          imgEl.addEventListener('click',()=>window.open(inv.data,'_blank'));
+          thumb.appendChild(imgEl);
+        } else {
+          const icon=div({style:{width:72,height:72,borderRadius:6,border:'1px solid var(--border)',background:'#fff',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',fontSize:24,cursor:'pointer',gap:2}},[
+            isPdf?'📄':'📎',
+            div({style:{fontSize:9,color:'var(--text3)',maxWidth:68,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',textAlign:'center'}},[inv.name||'file']),
+          ]);
+          icon.addEventListener('click',()=>window.open(inv.data,'_blank'));
+          thumb.appendChild(icon);
+        }
+        const delBtn=btn({style:{position:'absolute',top:-6,right:-6,width:18,height:18,borderRadius:'50%',background:'#dc2626',border:'none',color:'white',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',padding:0,lineHeight:1}},['×']);
+        delBtn.addEventListener('click',()=>{
+          const cur=S.modalData;
+          const updated=(cur.invoices||[]).filter((_,i)=>i!==idx);
+          S.modalData={...cur,invoices:updated};
+          render();
+        });
+        thumb.appendChild(delBtn);
+        previewWrap.appendChild(thumb);
+      });
+      if(invoices.length)sec.appendChild(previewWrap);
+
+      // Upload button
+      const fileInp=el('input',{type:'file',accept:'image/*,application/pdf',multiple:true,style:{display:'none'}});
+      fileInp.addEventListener('change',async e=>{
+        const files=[...e.target.files];
+        if(!files.length)return;
+        const cur=S.modalData;
+        const existing=cur.invoices||[];
+        const newInvs=await Promise.all(files.map(f=>new Promise(res=>{
+          const reader=new FileReader();
+          reader.onload=ev=>res({name:f.name,data:ev.target.result,uploadedAt:new Date().toISOString()});
+          reader.readAsDataURL(f);
+        })));
+        S.modalData={...cur,invoices:[...existing,...newInvs]};
+        // Auto-save invoices to payment list
+        const list=getPayments();
+        const idx2=list.findIndex(p=>p.id===cur.id);
+        if(idx2>=0){list[idx2]={...list[idx2],invoices:[...existing,...newInvs]};lsSet('tt_payments',list);}
+        render();
+        showToast('📎 Đã thêm '+newInvs.length+' hoá đơn');
+        // Send to Telegram
+        const cfg4=getPayTgCfg();
+        if(cfg4.token&&cfg4.chatId){
+          const p4={...cur,invoices:[...existing,...newInvs]};
+          const bank4=VIET_BANKS.find(b=>b.code===p4.bankCode);
+          for(const inv of newInvs){
+            const isImg4=/^data:image/.test(inv.data||'');
+            const caption4='🧾 <b>Hoá đơn đề xuất</b> '+p4.code+'\n📝 '+p4.description+'\n💰 '+formatMoney(p4.amount)+'\n🏦 '+(bank4?bank4.name:p4.bankCode||'')+'\n📎 '+inv.name;
+            try{
+              const base64=inv.data.split(',')[1];
+              const mime=inv.data.split(';')[0].slice(5);
+              const fd=new FormData();
+              fd.append('chat_id',cfg4.chatId);
+              fd.append('caption',caption4);
+              fd.append('parse_mode','HTML');
+              const byteChars=atob(base64);
+              const byteArr=new Uint8Array(byteChars.length);
+              for(let j=0;j<byteChars.length;j++)byteArr[j]=byteChars.charCodeAt(j);
+              const blob=new Blob([byteArr],{type:mime});
+              fd.append(isImg4?'photo':'document',blob,inv.name||'invoice.jpg');
+              await fetch('https://api.telegram.org/bot'+cfg4.token+'/'+(isImg4?'sendPhoto':'sendDocument'),{method:'POST',body:fd});
+            }catch(e2){console.warn('TG invoice upload:',e2);}
+          }
+        }
+      });
+      const uploadBtn=btn({className:'btn btn-secondary',style:{fontSize:12,display:'flex',alignItems:'center',gap:5},onClick:()=>fileInp.click()},[
+        '📎 Thêm hoá đơn',
+        div({style:{fontSize:10,color:'var(--text3)',fontWeight:400}},['(ảnh / PDF)']),
+      ]);
+      sec.appendChild(fileInp);
+      sec.appendChild(uploadBtn);
+      if(invoices.length){
+        sec.appendChild(div({style:{fontSize:11,color:'var(--text3)',marginTop:6}},['Đã có '+invoices.length+' hoá đơn — ảnh tự động gửi lên Telegram']));
+      }
+      // Insert before footer buttons
+      const footerEl=modalEl.querySelector('[data-footer]');
+      if(footerEl)modalEl.insertBefore(sec,footerEl);
+      else modalEl.appendChild(sec);
+  })();
+
   showModal(modalEl);
 }
 
 
 function renderPayTgCfgModal(){
   const cfg=getPayTgCfg();
-  const tokenInp=inp({className:'input',value:cfg.token||'',placeholder:'Bot Token từ @BotFather',style:{fontFamily:'monospace',fontSize:12}});
-  const chatIdInp=inp({className:'input',value:cfg.chatId||'',placeholder:'Chat ID hoặc Group ID'});
+
+  // Use local mutable object so inputs can update it before save
+  const localCfg={token:cfg.token||'',chatId:cfg.chatId||'',accountantTg:cfg.accountantTg||''};
+
+  const tokenInp=inp({className:'input',value:localCfg.token,placeholder:'Bot Token từ @BotFather',style:{fontFamily:'monospace',fontSize:12}});
+  tokenInp.addEventListener('input',e=>{localCfg.token=e.target.value.trim();});
+
+  const chatIdInp=inp({className:'input',value:localCfg.chatId,placeholder:'Chat ID hoặc Group ID'});
+  chatIdInp.addEventListener('input',e=>{localCfg.chatId=e.target.value.trim();});
+
+  const accInp=inp({className:'input',value:localCfg.accountantTg,placeholder:'username kế toán (không có @)'});
+  accInp.addEventListener('input',e=>{localCfg.accountantTg=e.target.value.replace(/^@/,'').trim();});
+
   const errDiv=div({style:{fontSize:12,color:'#dc2626',marginTop:6,display:'none'}});
   const okDiv=div({style:{fontSize:12,color:'#065f46',fontWeight:600,marginTop:6,display:'none'}},['✅ Kết nối thành công!']);
 
+  const doSave=()=>{
+    if(!localCfg.token||!localCfg.chatId){
+      errDiv.textContent='Nhập đủ Bot Token và Chat ID!';
+      errDiv.style.display='block';
+      return false;
+    }
+    savePayTgCfg({token:localCfg.token,chatId:localCfg.chatId,accountantTg:localCfg.accountantTg});
+    return true;
+  };
+
   const testBtn=btn({style:{padding:'8px 12px',borderRadius:8,border:'1.5px solid #e5e7eb',background:'white',fontSize:12,fontWeight:600,whiteSpace:'nowrap'},onClick:async()=>{
-    const tok=tokenInp.value.trim();
-    const cid=chatIdInp.value.trim();
-    if(!tok||!cid){errDiv.textContent='Nhập token và chat ID trước!';errDiv.style.display='block';return;}
-    testBtn.textContent='...';
+    if(!localCfg.token||!localCfg.chatId){errDiv.textContent='Nhập token và chat ID trước!';errDiv.style.display='block';return;}
+    testBtn.textContent='...'; testBtn.disabled=true;
     try{
-      await tgCall(tok,'sendMessage',{chat_id:cid,text:'✅ <b>Thanh toán Bot</b> đã kết nối với Task Tracker!',parse_mode:'HTML'});
-      savePayTgCfg({token:tok,chatId:cid});
-      okDiv.style.display='block';errDiv.style.display='none';
-      testBtn.textContent='✓ OK';testBtn.style.background='#ecfdf5';testBtn.style.color='#065f46';
-    }catch(e){errDiv.textContent='❌ '+e.message;errDiv.style.display='block';testBtn.textContent='Test';}
+      await tgCall(localCfg.token,'sendMessage',{chat_id:localCfg.chatId,text:'✅ <b>Thanh toán Bot</b> đã kết nối với Task Tracker!',parse_mode:'HTML'});
+      doSave();
+      okDiv.style.display='block'; errDiv.style.display='none';
+      testBtn.textContent='✓ OK'; testBtn.style.background='#ecfdf5'; testBtn.style.color='#065f46';
+    }catch(e){
+      errDiv.textContent='❌ '+e.message; errDiv.style.display='block';
+      testBtn.textContent='Test'; testBtn.disabled=false;
+    }
   }},['Test']);
 
   const modalEl=div({className:'modal'},[
@@ -2516,43 +3185,33 @@ function renderPayTgCfgModal(){
       div({className:'modal-title'},['🤖 Kết nối Telegram — Thanh toán']),
       btn({className:'modal-close',onClick:()=>setState({modal:null})},['×']),
     ]),
-    div({style:{background:'var(--bg)',borderRadius:'var(--r8)',padding:'12px 14px',marginBottom:12,border:'1px solid var(--border)',fontSize:12,color:'var(--text2)',lineHeight:1.8}},[
-      '📋 <b>Cách dùng:</b> Khi tạo đề xuất mới, bot sẽ gửi thông báo kèm QR vào group. ',
-      'Giám đốc bấm <b>✅ Duyệt</b> hoặc <b>❌ Từ chối</b> ngay trên Telegram.',
-      el('br'),
-      '💡 Có thể dùng chung bot với Task Tracker hoặc tạo bot riêng.',
+    div({style:{background:'var(--bg)',borderRadius:'var(--r8)',padding:'10px 14px',marginBottom:12,border:'1px solid var(--border)',fontSize:12,color:'var(--text2)',lineHeight:1.7}},[
+      div({},[span({style:{fontWeight:600}},['📋 Cách dùng: ']),span({},[' Bot gửi thông báo + QR khi tạo đề xuất mới.'])]),
+      div({},[span({style:{fontWeight:600,color:'#d97706'}},['⚠️ Khuyến nghị: ']),span({},[' Dùng bot riêng cho Thanh toán để tránh xung đột.'])]),
     ]),
     makeField('Bot Token',[div({style:{display:'flex',gap:8}},[tokenInp])]),
     makeField('Chat ID / Group ID',[div({style:{display:'flex',gap:8}},[chatIdInp,testBtn])]),
     errDiv,okDiv,
     div({style:{background:'var(--bg)',borderRadius:'var(--r8)',padding:'12px 14px',marginTop:8,border:'1px solid var(--border)'}},[
-      div({style:{fontSize:11,fontWeight:700,color:'var(--text2)',marginBottom:10,textTransform:'uppercase',letterSpacing:'.04em'}},['👥 Phân quyền duyệt (tùy chọn)']),
+      div({style:{fontSize:11,fontWeight:700,color:'var(--text2)',marginBottom:10,textTransform:'uppercase',letterSpacing:'.04em'}},['👥 Phân quyền (tùy chọn)']),
       makeField('📊 Username Kế toán (@username)',[
-        (()=>{
-          const i=inp({className:'input',value:cfg.accountantTg||'',placeholder:'username kế toán (không có @)'});
-          i.addEventListener('input',e=>{cfg.accountantTg=e.target.value.replace(/^@/,'');});
-          return i;
-        })(),
-        div({style:{fontSize:11,color:'var(--text3)',marginTop:3}},['Kế toán duyệt/từ chối trước, sau đó Giám đốc duyệt cuối.']),
+        accInp,
+        div({style:{fontSize:11,color:'var(--text3)',marginTop:3}},['Nhận thông báo sau khi quản lý duyệt, xác nhận UNC.']),
       ]),
     ]),
     div({style:{display:'flex',gap:8,paddingTop:'1rem',borderTop:'1px solid var(--border)'}},[
-      cfg.token?btn({className:'btn btn-danger',style:{fontSize:12},onClick:()=>{
-        savePayTgCfg({token:'',chatId:''});
+      localCfg.token?btn({className:'btn btn-danger',style:{fontSize:12},onClick:()=>{
+        savePayTgCfg({token:'',chatId:'',accountantTg:''});
         setState({modal:null});
         showToast('🔌 Đã ngắt kết nối');
-      }},['Ngắt kết nối']):null,
+      }},['Ngắt']):null,
       btn({className:'btn btn-secondary',onClick:()=>setState({modal:null})},['Đóng']),
       btn({className:'btn btn-primary',style:{flex:1},onClick:()=>{
-        const tok=tokenInp.value.trim();
-        const cid=chatIdInp.value.trim();
-        if(!tok||!cid){errDiv.textContent='Nhập đủ token và chat ID!';errDiv.style.display='block';return;}
-        savePayTgCfg({token:tok,chatId:cid,accountantTg:cfg.accountantTg||''});
-        showToast('✅ Đã lưu cấu hình!');
-        setState({modal:null});
+        if(doSave()){showToast('✅ Đã lưu!');setState({modal:null});}
       }},['Lưu']),
     ]),
   ]);
+
   showModal(modalEl);
 }
 
