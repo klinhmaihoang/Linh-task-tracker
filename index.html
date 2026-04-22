@@ -255,6 +255,16 @@ const tgOffsets={};
 function getOffset(key){return tgOffsets[key]||(lsGet('tt_offset_'+key.replace(/[^a-z0-9]/gi,'_'))||0);}
 function setOffset(key,val){tgOffsets[key]=val;lsSet('tt_offset_'+key.replace(/[^a-z0-9]/gi,'_'),val);}
 const reminded={};
+function hasReminded(key){
+  if(reminded[key])return true;
+  const stored=lsGet('tt_reminded_'+key);
+  if(stored&&Date.now()-stored<86400000){reminded[key]=1;return true;}
+  return false;
+}
+function setReminded(key){
+  reminded[key]=1;
+  lsSet('tt_reminded_'+key,Date.now());
+}
 
 function setState(patch,rerender=true){
   Object.assign(S,typeof patch==='function'?patch(S):patch);
@@ -749,30 +759,30 @@ function startDeadlineReminder(){
       const mins=Math.round((new Date(t.deadline)-now)/60000);
 
       // ── In-app popup: 15 min warning ──
-      if(mins>=13&&mins<=15&&!reminded[t.id+'_15']){
-        reminded[t.id+'_15']=1;
+      if(mins>=13&&mins<=15&&!hasReminded(t.id+'_15')){
+        setReminded(t.id+'_15');
         if(S.modal===null){
           setState({modal:'reminder',modalData:{tasks:[{...t,cat,mins,type:'warn15'}]}},false);
           render();
         }
       }
       // ── In-app popup: deadline reached ──
-      if(mins>=-2&&mins<=2&&!reminded[t.id+'_0_app']){
-        reminded[t.id+'_0_app']=1;
+      if(mins>=-2&&mins<=2&&!hasReminded(t.id+'_0_app')){
+        setReminded(t.id+'_0_app');
         dueNowTasks.push({...t,cat,mins,type:'due'});
       }
 
       // ── Telegram: 1 hour warning ──
       const tg=getCatTg(cat);
       if(!tg)continue;
-      if(mins>=55&&mins<=65&&!reminded[t.id+'_60']){
-        reminded[t.id+'_60']=1;
+      if(mins>=55&&mins<=65&&!hasReminded(t.id+'_60')){
+        setReminded(t.id+'_60');
         await tgCall(tg.token,'sendMessage',{chat_id:tg.chatId,parse_mode:'HTML',
           reply_markup:buildTaskKeyboard(t.id,t.status,t.progress),
           text:'⏰ <b>Nhắc deadline – còn 1 giờ!</b>\n\n🔖 <b>'+t.title+'</b>\n👤 '+(t.assignee||'Chưa gán')+'\n🗂 '+(cat?cat.icon+' '+cat.name:'')+'\n🕐 '+formatDate(t.deadline)+'\n📊 '+(t.progress||0)+'% hoàn thành'}).catch(()=>{});
       }
-      if(mins>=-2&&mins<=2&&!reminded[t.id+'_0']){
-        reminded[t.id+'_0']=1;
+      if(mins>=-2&&mins<=2&&!hasReminded(t.id+'_0')){
+        setReminded(t.id+'_0');
         await tgCall(tg.token,'sendMessage',{chat_id:tg.chatId,parse_mode:'HTML',
           reply_markup:buildTaskKeyboard(t.id,t.status,t.progress),
           text:'🚨 <b>ĐẾN DEADLINE!</b>\n\n🔖 <b>'+t.title+'</b>\n👤 '+(t.assignee||'Chưa gán')+'\n🗂 '+(cat?cat.icon+' '+cat.name:'')+'\n🕐 '+formatDate(t.deadline)+'\n📊 '+(t.progress||0)+'% · ⚡ Cập nhật ngay!'}).catch(()=>{});
