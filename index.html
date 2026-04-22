@@ -355,11 +355,9 @@ function showToast(msg,ok=true){
 
 function buildTaskKeyboard(taskId,status,progress,assigneeTgId){
   const rows=[];
-  // Row 1: Accept task — show when todo AND not yet locked to someone
-  if(status==='todo'&&!assigneeTgId){
+  // Row 1: Accept task — show when todo, use acceptedAt as the real lock flag
+  if(status==='todo'){
     rows.push([{text:'🙋 ── NHẬN TASK NÀY ──',callback_data:'accept|'+taskId+'|0'}]);
-  } else if(status==='todo'&&assigneeTgId){
-    rows.push([{text:'✅ Đã có người nhận task',callback_data:'view|'+taskId+'|0'}]);
   }
   // Row 2: Status buttons
   rows.push([
@@ -710,7 +708,7 @@ async function pollOneBot(token,chatId){
       continue;
     }
     if(text.startsWith('/delete')){
-      const delParts=text.split(/\s+/);
+      const delParts=text.split(/ +/);
       const delId=Number(delParts[1]);
       if(!delId){
         await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:'❌ Nhập ID task.\nVí dụ: <code>/delete 1234567890</code>\n\nDùng /list để xem ID.'});
@@ -806,6 +804,39 @@ async function pollOneBot(token,chatId){
         text:'⭐ <b>Feedback từ quản lý</b>\n\n🔖 <b>'+updatedFb.title+'</b>'+assigneeTag+(fbCat?'\n🗂 '+fbCat.icon+' '+fbCat.name:'')+'\n\n💬 <b>Feedback:</b> '+fbText+'\n\n✍️ Từ: <b>'+fbWho+'</b>'});
       continue;
     }
+    if(text.startsWith('/accept')){
+      const accParts=text.split(/ +/);
+      const accId=Number(accParts[1]);
+      if(!accId){
+        await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:'🙋 Format: <code>/accept [ID task]</code>\n\nDùng /list để xem ID task.'});
+        continue;
+      }
+      const accIdx=(S.tasks||[]).findIndex(t=>String(t.id)===String(accId)&&(myCatIds.size===0||myCatIds.has(t.categoryId)));
+      if(accIdx<0){await tgCall(token,'sendMessage',{chat_id:chatId,text:'❌ Không tìm thấy task ID: '+accId});continue;}
+      const accTask=S.tasks[accIdx];
+      if(accTask.acceptedAt){
+        await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',text:'🔒 Task này đã được <b>'+(accTask.assignee||'ai đó')+'</b> nhận rồi.'});
+        continue;
+      }
+      const accFrom=msg.from;
+      const accWho=tgUserName(accFrom);
+      const accAccepted={...accTask,
+        assigneeTgId:tgUserId(accFrom),
+        assigneeTgUsername:accFrom?.username||'',
+        assignee:accTask.assignee||accWho,
+        status:'inprogress',
+        progress:accTask.progress||10,
+        acceptedAt:new Date().toISOString()
+      };
+      const accNt=S.tasks.map((t,i)=>i===accIdx?accAccepted:t);
+      S.tasks=accNt;lsSet('tt_tasks',accNt);
+      const accCat=cats.find(c=>c.id===accAccepted.categoryId);
+      const accBar='█'.repeat(Math.round((accAccepted.progress)/10))+'░'.repeat(10-Math.round((accAccepted.progress)/10));
+      await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+        text:'🙋 <b>'+accWho+'</b> đã nhận task!\n\n🔖 <b>'+accAccepted.title+'</b>\n👤 '+accAccepted.assignee+(accFrom?.username?' (@'+accFrom.username+')':'')+(accCat?'\n🗂 '+accCat.icon+' '+accCat.name:'')+'\n📊 ['+accBar+'] '+accAccepted.progress+'% · ⚡ Đang làm\n\n✅ Chỉ '+accAccepted.assignee+' mới được cập nhật tiến độ.'
+      });
+      continue;
+    }
     if(text.startsWith('/add')){
       const rows=text.split('\n').map(r=>r.trim()).filter(Boolean);
       const data=rows[0]==='/add'?rows.slice(1):rows.slice(1);
@@ -829,8 +860,9 @@ async function pollOneBot(token,chatId){
       saveTasks(updated);
       const dlLine=deadline?'\n⏰ Deadline: '+formatDate(deadline):'';
       const taskKeyboard=buildTaskKeyboard(newTask.id,'todo',0,null);
+      const priEmoji2=({high:'🔴',medium:'🟡',low:'🟢'}[priority]||'🟡');
       await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',reply_markup:taskKeyboard,
-        text:'📌 <b>Task mới!</b>\n\n🔖 <b>'+title+'</b>\n👤 '+(assignee||'Chưa gán')+'\n🗂 '+(cat?cat.icon+' '+cat.name:'')+dlLine+'\n'+({high:'🔴',medium:'🟡',low:'🟢'}[priority]||'🟡')+' Ưu tiên: '+PRI_LABEL[priority]+'\n📊 [░░░░░░░░░░] 0% · 📋 Cần làm'});
+        text:'📌 <b>Task mới!</b>\n\n🔖 <b>'+title+'</b>\n👤 '+(assignee||'Chưa gán')+'\n🗂 '+(cat?cat.icon+' '+cat.name:'')+dlLine+'\n'+priEmoji2+' Ưu tiên: '+PRI_LABEL[priority]+'\n📊 [░░░░░░░░░░] 0% · 📋 Cần làm\n\n👆 Bấm <b>🙋 NHẬN TASK NÀY</b> để nhận việc!'});
     }
 
     }
@@ -1280,6 +1312,14 @@ function renderTaskModal(){
   descTa.value=form.desc||'';
   descTa.addEventListener('input',e=>silent('desc',e.target.value));
 
+  const notesTa=el('textarea',{className:'input',rows:2,style:{resize:'vertical'},placeholder:'Nhân viên ghi qua Telegram hoặc nhập thủ công...'});
+  notesTa.value=form.notes||'';
+  notesTa.addEventListener('input',e=>silent('notes',e.target.value));
+
+  const feedbackTa=el('textarea',{className:'input',rows:2,style:{resize:'vertical'},placeholder:'Nhập feedback cho nhân viên...'});
+  feedbackTa.value=form.feedback||'';
+  feedbackTa.addEventListener('input',e=>silent('feedback',e.target.value));
+
   const tgUserInp=inp({className:'input',value:form.assigneeTgUsername||'',placeholder:'username (không có @)'});
   tgUserInp.addEventListener('input',e=>silent('assigneeTgUsername',e.target.value));
 
@@ -1308,6 +1348,14 @@ function renderTaskModal(){
       })),
     ]),
     makeField('Mô tả',[descTa]),
+    makeField('📌 Ghi chú khó khăn (từ nhân viên)',[
+      notesTa,
+      form.notesUpdatedAt?div({style:{fontSize:11,color:'var(--text3)',marginTop:3}},['Cập nhật lúc: '+new Date(form.notesUpdatedAt).toLocaleString('vi-VN')]):null,
+    ]),
+    makeField('⭐ Feedback (từ quản lý)',[
+      feedbackTa,
+      form.feedbackAt?div({style:{fontSize:11,color:'var(--text3)',marginTop:3}},['Feedback bởi '+(form.feedbackBy||'')+ ' lúc '+new Date(form.feedbackAt).toLocaleString('vi-VN')]):null,
+    ]),
     (()=>{
       const pct=S.modalData.progress||0;
       const progColor=pct>=100?'#059669':pct>=60?'#2563EB':pct>=30?'#D97706':'#94A3B8';
@@ -1352,7 +1400,17 @@ function renderTaskModal(){
       btn({className:'btn btn-secondary',onClick:()=>setState({modal:null,modalData:null})},['Hủy']),
       btn({className:'btn btn-primary',style:{flex:1,background:selectedCat?selectedCat.color:'var(--text1)'},onClick:()=>{
         // Read latest values directly from inputs
-        const saved={...S.modalData,title:titleInp.value.trim(),assignee:assigneeInp.value,deadline:deadlineInp.value,desc:descTa.value,assigneeTgUsername:(tgUserInp.value||'').trim().replace('@','')};
+        const saved={...S.modalData,
+          title:titleInp.value.trim(),
+          assignee:assigneeInp.value,
+          deadline:deadlineInp.value,
+          desc:descTa.value,
+          notes:notesTa.value.trim()||undefined,
+          feedback:feedbackTa.value.trim()||undefined,
+          feedbackBy:feedbackTa.value.trim()?(S.modalData.feedbackBy||'Quản lý'):undefined,
+          feedbackAt:feedbackTa.value.trim()&&feedbackTa.value.trim()!==(S.modalData.feedback||'')?(new Date().toISOString()):(S.modalData.feedbackAt),
+          assigneeTgUsername:(tgUserInp.value||'').trim().replace('@','')
+        };
         if(!saved.title)return;
         handleSaveTask(saved,isNew);
       }},[isNew?'Tạo công việc':'Lưu thay đổi']),
