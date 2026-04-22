@@ -1197,7 +1197,7 @@ async function syncPull(){
   }
 }
 
-// Auto-pull thông minh: chỉ pull khi cloud MỚI HƠN local
+// Auto-pull payments: chỉ pull payments từ cloud, không ghi đè tasks/categories
 async function syncPullIfNewer(){
   const cfg=getSyncCfg();
   if(!cfg||!cfg.apiKey||!cfg.binId)return;
@@ -1208,13 +1208,33 @@ async function syncPullIfNewer(){
     });
     if(!res.ok)return;
     const json=await res.json();
-    // savedAt nằm trong record (tool ghi vào khi push)
-    const cloudSavedAt=json.record&&json.record.savedAt?new Date(json.record.savedAt).getTime():0;
+    const data=json.record;
+    if(!data)return;
+    const cloudSavedAt=data.savedAt?new Date(data.savedAt).getTime():0;
     const localLastPush=lsGet('tt_sync_lastpush')||0;
-    console.log('[sync] cloud:',new Date(cloudSavedAt).toLocaleTimeString(),'local:',new Date(localLastPush).toLocaleTimeString());
+    // Nếu cloud mới hơn local > 3s → pull payments
     if(cloudSavedAt>localLastPush+3000){
-      console.log('[sync] cloud newer — pulling...');
-      await syncPull();
+      console.log('[sync] cloud newer → pulling payments...');
+      // Chỉ update payments — không đụng tasks/categories
+      if(Array.isArray(data.payments)){
+        const localPayments=getPayments();
+        // Merge: ưu tiên bản nào có lastActionAt mới hơn
+        const merged=data.payments.map(cp=>{
+          const lp=localPayments.find(p=>p.id===cp.id);
+          if(!lp)return cp;
+          const cloudTime=new Date(cp.lastActionAt||cp.createdAt||0).getTime();
+          const localTime=new Date(lp.lastActionAt||lp.createdAt||0).getTime();
+          return cloudTime>=localTime?cp:lp;
+        });
+        // Thêm các đề xuất chỉ có local (chưa sync lên)
+        localPayments.forEach(lp=>{
+          if(!merged.find(p=>p.id===lp.id))merged.push(lp);
+        });
+        lsSet('tt_payments',merged);
+        lsSet('tt_sync_lastpush',cloudSavedAt);
+        render();
+        console.log('[sync] payments updated:',merged.length);
+      }
     }
   }catch(e){
     // Silently ignore
