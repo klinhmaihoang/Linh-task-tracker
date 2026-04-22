@@ -577,14 +577,18 @@ async function pollPaymentBot(){
       if(pmsg){
         const pmsgChatId=String(pmsg.chat?.id||'');
         const isOurGroup=pmsgChatId===String(cfg.chatId);
-        // Detect Sepay format first — accept from ANY chat (Sepay có thể ở group khác)
+        const sepayChatId=cfg.sepayChatId?String(cfg.sepayChatId):'';
+        const isSepayChatGroup=sepayChatId&&pmsgChatId===sepayChatId;
+        // Detect Sepay format
         const ptxtRaw=(pmsg.text||pmsg.caption||'').trim();
         const looksLikeSepay=ptxtRaw.toLowerCase().includes('tiền ra')&&ptxtRaw.includes('Nội dung CK')&&ptxtRaw.includes('Số tiền');
-        if(!isOurGroup&&!looksLikeSepay){
-          // Không phải group mình, không phải Sepay → bỏ qua
+        // Chỉ xử lý nếu: group chính HOẶC group Sepay (khi có config) HOẶC bất kỳ group nào khi detect Sepay
+        if(!isOurGroup&&!isSepayChatGroup&&!looksLikeSepay){
           const cq2=u.callback_query;
           if(!cq2)continue;
         }
+        // Nếu là group Sepay nhưng không phải tin Sepay → bỏ qua
+        if(isSepayChatGroup&&!isOurGroup&&!looksLikeSepay)continue;
         if(pmsg.from&&pmsg.from.id&&!pmsg.from.is_bot&&isOurGroup)savePayMember(pmsg.from);
         const ptxt=ptxtRaw;
         const userId=pmsg.from?String(pmsg.from.id):'';
@@ -3227,7 +3231,7 @@ function renderPayTgCfgModal(){
   const cfg=getPayTgCfg();
 
   // Use local mutable object so inputs can update it before save
-  const localCfg={token:cfg.token||'',chatId:cfg.chatId||'',accountantTg:cfg.accountantTg||''};
+  const localCfg={token:cfg.token||'',chatId:cfg.chatId||'',accountantTg:cfg.accountantTg||'',sepayChatId:cfg.sepayChatId||''};
 
   const tokenInp=inp({className:'input',value:localCfg.token,placeholder:'Bot Token từ @BotFather',style:{fontFamily:'monospace',fontSize:12}});
   tokenInp.addEventListener('input',e=>{localCfg.token=e.target.value.trim();});
@@ -3238,6 +3242,9 @@ function renderPayTgCfgModal(){
   const accInp=inp({className:'input',value:localCfg.accountantTg,placeholder:'username kế toán (không có @)'});
   accInp.addEventListener('input',e=>{localCfg.accountantTg=e.target.value.replace(/^@/,'').trim();});
 
+  const sepayInp=inp({className:'input',value:localCfg.sepayChatId,placeholder:'Chat ID group có Sepay bot (nếu khác group trên)'});
+  sepayInp.addEventListener('input',e=>{localCfg.sepayChatId=e.target.value.trim();});
+
   const errDiv=div({style:{fontSize:12,color:'#dc2626',marginTop:6,display:'none'}});
   const okDiv=div({style:{fontSize:12,color:'#065f46',fontWeight:600,marginTop:6,display:'none'}},['✅ Kết nối thành công!']);
 
@@ -3247,7 +3254,7 @@ function renderPayTgCfgModal(){
       errDiv.style.display='block';
       return false;
     }
-    savePayTgCfg({token:localCfg.token,chatId:localCfg.chatId,accountantTg:localCfg.accountantTg});
+    savePayTgCfg({token:localCfg.token,chatId:localCfg.chatId,accountantTg:localCfg.accountantTg,sepayChatId:localCfg.sepayChatId});
     return true;
   };
 
@@ -3281,7 +3288,14 @@ function renderPayTgCfgModal(){
       div({style:{fontSize:11,fontWeight:700,color:'var(--text2)',marginBottom:10,textTransform:'uppercase',letterSpacing:'.04em'}},['👥 Phân quyền (tùy chọn)']),
       makeField('📊 Username Kế toán (@username)',[
         accInp,
-        div({style:{fontSize:11,color:'var(--text3)',marginTop:3}},['Nhận thông báo sau khi quản lý duyệt, xác nhận UNC.']),
+        div({style:{fontSize:11,color:'var(--text3)',marginTop:3}},['Nhận thông báo sau khi quản lý duyệt.']),
+      ]),
+    ]),
+    div({style:{background:'#FFF9C4',borderRadius:'var(--r8)',padding:'12px 14px',marginTop:8,border:'1px solid #F9A825'}},[
+      div({style:{fontSize:11,fontWeight:700,color:'#6D4C41',marginBottom:10,textTransform:'uppercase',letterSpacing:'.04em'}},['🔗 Sepay Integration']),
+      makeField('Chat ID group Sepay (nếu khác group thanh toán)',[
+        sepayInp,
+        div({style:{fontSize:11,color:'var(--text3)',marginTop:3}},['Bot sẽ lắng nghe group Sepay để tự động xác nhận tiền ra. Để trống nếu Sepay và thanh toán cùng group.']),
       ]),
     ]),
     div({style:{display:'flex',gap:8,paddingTop:'1rem',borderTop:'1px solid var(--border)'}},[
