@@ -334,6 +334,12 @@ function parseTemplate(text){
       else result.bankName=val;
     } else if(key.includes('số tk')||key.includes('stk')||key.includes('account no'))result.accountNo=val.replace(/ /g,'');
     else if(key.includes('tên tk')||key.includes('tên tài khoản')||key.includes('account name'))result.accountName=val.toUpperCase();
+    else if(key.includes('người duyệt')||key.includes('nguoi duyet')||key.includes('approver')){
+      // Tách username nếu có @
+      const tgMatch=val.match(/@([a-zA-Z0-9_]+)/);
+      if(tgMatch)result.approverTg=tgMatch[1];
+      result.approver=val.replace(/@[a-zA-Z0-9_]+/,'').trim()||val;
+    }
     else if(key.includes('ghi chú')||key.includes('note'))result.notes=val;
   }
   return result;
@@ -376,7 +382,7 @@ async function handlePaySession(token,chatId,userId,userName,pmsg,ptxt,session){
       [{text:'✏️ Điền lại',callback_data:'pay_sess_confirm|'+userId+'|redo'}],
       [{text:'❌ Hủy',callback_data:'pay_sess_confirm|'+userId+'|cancel'}],
     ]};
-    setSession(userId,{flow:'confirm',data:{...parsed,proposer:session.data?.proposer||userName}});
+    setSession(userId,{flow:'confirm',data:{...parsed,proposer:session.data?.proposer||userName,approver:parsed.approver||'',approverTg:parsed.approverTg||''}});
     await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',reply_markup:confirmKb,
       text:'📋 <b>Xác nhận đề xuất:</b>\n\n'
         +'🏢 '+parsed.supplier+'\n'
@@ -384,6 +390,7 @@ async function handlePaySession(token,chatId,userId,userName,pmsg,ptxt,session){
         +'📝 '+parsed.description+'\n'
         +'🏦 '+(bank?bank.name:parsed.bankCode)+' · '+parsed.accountNo+'\n'
         +'👤 '+parsed.accountName
+        +(parsed.approver?'\n✅ Người duyệt: '+(parsed.approverTg?'@'+parsed.approverTg:parsed.approver):'')
         +(parsed.notes?'\n📌 '+parsed.notes:'')
         +'\n\nThông tin đúng chưa?'
     }).catch(()=>{});
@@ -808,8 +815,9 @@ async function pollPaymentBot(){
                 +'Ngân hàng: \n'
                 +'Số TK: \n'
                 +'Tên TK: \n'
+                +'Người duyệt: \n'
                 +'Ghi chú: </code>\n\n'
-                +'💡 <i>Ngân hàng: nhập tên (ACB, VCB, MB, TCB, VPB...) hoặc mã số\nSau khi xác nhận, QR chuyển khoản sẽ được gửi tự động.</i>\n\nNhắn <b>hủy</b> để thoát.'
+                +'💡 <i>Ngân hàng: nhập tên (ACB, VCB, MB, TCB, VPB...)\nNgười duyệt: nhập @username Telegram của quản lý\nSau khi xác nhận, QR sẽ được gửi tự động.</i>\n\nNhắn <b>hủy</b> để thoát.'
             }).catch(()=>{});
           }
           continue;
@@ -990,6 +998,7 @@ async function pollPaymentBot(){
           const d=sess.data;
           const newPay2={id:'pay_'+Date.now(),code:genPaymentCode(),
             proposer:d.proposer||presserName,proposerTg:presserUsername,
+            approver:d.approver||'',approverTg:d.approverTg||'',
             supplier:d.supplier,amount:d.amount,description:d.description,
             bankCode:d.bankCode||'970432',accountNo:d.accountNo,accountName:d.accountName,
             notes:d.notes||'',status:'pending',createdAt:new Date().toISOString()};
