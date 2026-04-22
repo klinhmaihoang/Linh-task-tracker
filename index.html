@@ -308,12 +308,31 @@ async function notifyPayment(payment,msgPrefix){
   const bank=VIET_BANKS&&VIET_BANKS.find(b=>b.code===payment.bankCode);
   const bankName=bank?bank.name:(payment.bankCode||'');
   const st=PAYMENT_STATUS[payment.status]||PAYMENT_STATUS.pending;
-  // Encode approverTg into callback so we can auth-check on press
-  const aTg=payment.approverTg||'';
-  const keyboard={inline_keyboard:[
-    [{text:'✅ Duyệt thanh toán',callback_data:'pay_approve|'+payment.id+'|'+aTg}],
-    [{text:'❌ Từ chối',callback_data:'pay_reject|'+payment.id+'|'+aTg},{text:'💳 Đã thanh toán',callback_data:'pay_paid|'+payment.id+'|'+aTg}],
-  ]};
+  // Build keyboard based on current status & roles
+  const cfg2=getPayTgCfg();
+  const accTg=cfg2.accountantTg||'';
+  const dirTg=payment.approverTg||'';
+  let keyboard;
+  if(payment.status==='pending'){
+    // Kế toán duyệt/từ chối
+    keyboard={inline_keyboard:[
+      [{text:'📋 KT Duyệt',callback_data:'pay_acc_approve|'+payment.id+'|'+accTg}],
+      [{text:'❌ KT Từ chối',callback_data:'pay_acc_reject|'+payment.id+'|'+accTg}],
+    ]};
+  } else if(payment.status==='acc_approved'){
+    // Giám đốc duyệt/từ chối
+    keyboard={inline_keyboard:[
+      [{text:'✅ GĐ Duyệt thanh toán',callback_data:'pay_approve|'+payment.id+'|'+dirTg}],
+      [{text:'❌ GĐ Từ chối',callback_data:'pay_reject|'+payment.id+'|'+dirTg}],
+    ]};
+  } else if(payment.status==='approved'){
+    // Đánh dấu đã TT → yêu cầu ủy nhiệm chi
+    keyboard={inline_keyboard:[
+      [{text:'💳 Đã thanh toán — gửi ủy nhiệm chi',callback_data:'pay_paid|'+payment.id+'|'+dirTg}],
+    ]};
+  } else {
+    keyboard={inline_keyboard:[]};
+  }
   const proposerTag=payment.proposerTg?'\n👤 '+payment.proposer+' (@'+payment.proposerTg+')':'\n👤 '+payment.proposer;
   const approverTag=payment.approver?(payment.approverTg?'\n✓ Người duyệt: '+payment.approver+' (@'+payment.approverTg+')':'\n✓ Người duyệt: <b>'+payment.approver+'</b>'):'';
   // Build mention line for tagging
@@ -386,6 +405,33 @@ async function pollPaymentBot(){
           if(!mbs.length){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'Chưa có thành viên. Mọi người nhắn /start vào bot để được ghi nhận.'}).catch(()=>{});continue;}
           const body=mbs.map((m,i)=>(i+1)+'. <b>'+m.name+'</b>'+(m.username?' — @'+m.username:' — (chưa có username)')).join('\n');
           await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',text:'👥 <b>Thành viên ('+mbs.length+')</b>\n\n'+body}).catch(()=>{});
+          continue;
+        }
+
+        // /receipt [payId] + photo → mark as paid with receipt
+        if(ptxt.startsWith('/receipt')){
+          const rParts=ptxt.split(' ');
+          const rId=rParts[1];
+          if(!rId){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'📎 Format: /receipt [ID đề xuất] + đính kèm ảnh ủy nhiệm chi'}).catch(()=>{});continue;}
+          const rIdx=getPayments().findIndex(p=>p.id===rId);
+          if(rIdx<0){await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'❌ Không tìm thấy đề xuất: '+rId}).catch(()=>{});continue;}
+          const rPay=getPayments()[rIdx];
+          const hasPhoto=pmsg.photo&&pmsg.photo.length>0;
+          const hasDoc=pmsg.document&&pmsg.document.mime_type&&pmsg.document.mime_type.includes('image');
+          if(!hasPhoto&&!hasDoc){
+            await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+              text:'📎 Vui lòng gửi lại kèm <b>ảnh ủy nhiệm chi</b>:\n<code>/receipt '+rId+'</code> + chọn ảnh'
+            }).catch(()=>{});continue;
+          }
+          const fileId=hasPhoto?pmsg.photo[pmsg.photo.length-1].file_id:pmsg.document.file_id;
+          const receiptWho=pmsg.from?((pmsg.from.first_name||'')+(pmsg.from.last_name?' '+pmsg.from.last_name:'')).trim():'';
+          const rUpdated={...rPay,status:'paid',receiptFileId:fileId,receiptBy:receiptWho,receiptAt:new Date().toISOString()};
+          savePayments(getPayments().map((p,i)=>i===rIdx?rUpdated:p));
+          const propTag=rUpdated.proposerTg?'\n👤 @'+rUpdated.proposerTg:'\n👤 '+(rUpdated.proposer||'');
+          const tagLine2=[rUpdated.proposerTg,rUpdated.approverTg,rUpdated.accountantTg].filter(Boolean).map(u=>'@'+u).join(' ');
+          await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+            text:'💳 <b>Hoàn tất! Đã nhận ủy nhiệm chi</b>'+(tagLine2?'\n'+tagLine2:'')+'\n\n🔖 <b>'+rUpdated.code+'</b>\n📝 '+rUpdated.description+'\n💰 <b>'+formatMoney(rUpdated.amount)+'</b>'+propTag+'\n\n✅ Quy trình thanh toán hoàn tất.\n🧾 Ủy nhiệm chi đã được lưu.'
+          }).catch(()=>{});
           continue;
         }
 
@@ -465,23 +511,52 @@ async function pollPaymentBot(){
       const payments=getPayments();
       const pidx=payments.findIndex(p=>p.id===payId);
       if(pidx<0)continue;
-      const statusMap={pay_approve:'approved',pay_reject:'rejected',pay_paid:'paid'};
+      // Map action to new status
+      const statusMap={
+        pay_acc_approve:'acc_approved',
+        pay_acc_reject:'acc_rejected',
+        pay_approve:'approved',
+        pay_reject:'rejected',
+        pay_paid:'awaiting_receipt',
+      };
       const newStatus=statusMap[action];
       if(!newStatus)continue;
 
       const updated={...payments[pidx],status:newStatus,
-        approver:payments[pidx].approver||presserName,
-        approverTg:payments[pidx].approverTg||presserUsername,
-        approvedAt:new Date().toISOString(),approvedBy:presserName};
+        approver:action.startsWith('pay_acc_')?payments[pidx].approver:(payments[pidx].approver||presserName),
+        approverTg:action.startsWith('pay_acc_')?payments[pidx].approverTg:(payments[pidx].approverTg||presserUsername),
+        accountant:action.startsWith('pay_acc_')?presserName:payments[pidx].accountant,
+        accountantTg:action.startsWith('pay_acc_')?presserUsername:payments[pidx].accountantTg,
+        lastActionAt:new Date().toISOString(),lastActionBy:presserName};
       savePayments(payments.map((p,i)=>i===pidx?updated:p));
       const st=PAYMENT_STATUS[newStatus];
       await tgCall(cfg.token,'editMessageReplyMarkup',{chat_id:cfg.chatId,message_id:cq.message.message_id,reply_markup:{inline_keyboard:[]}}).catch(()=>{});
+
       const propTag2=updated.proposerTg?'\n👤 @'+updated.proposerTg+(updated.proposer?' ('+updated.proposer+')':''):'\n👤 '+(updated.proposer||'');
-      const apvTag2=updated.approverTg?'\n✓ @'+updated.approverTg+(updated.approver?' ('+updated.approver+')':''):'\n✓ '+(updated.approver||'');
-      const tagLine=[updated.proposerTg?'@'+updated.proposerTg:null,updated.approverTg?'@'+updated.approverTg:null].filter(Boolean).join(' ');
-      await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
-        text:st.icon+' <b>'+st.label+'</b>'+(tagLine?'\n'+tagLine:'')+'\n\n🔖 <b>'+updated.code+'</b>\n📝 '+updated.description+'\n💰 <b>'+formatMoney(updated.amount)+'</b>'+propTag2+apvTag2+'\n\n👆 Xử lý bởi: <b>'+presserName+'</b>'
-      }).catch(()=>{});
+      const apvTag2=updated.approverTg?'\n✓ GĐ: @'+updated.approverTg+(updated.approver?' ('+updated.approver+')':''):(updated.approver?'\n✓ GĐ: '+updated.approver:'');
+      const accTag2=updated.accountantTg?'\n📊 KT: @'+updated.accountantTg+(updated.accountant?' ('+updated.accountant+')':''):(updated.accountant?'\n📊 KT: '+updated.accountant:'');
+      const tagLine=[updated.proposerTg,updated.approverTg,updated.accountantTg].filter(Boolean).map(u=>'@'+u).join(' ');
+
+      // If GĐ approved → re-send with "Đã thanh toán" button
+      if(newStatus==='approved'){
+        await notifyPayment(updated,'✅ <b>Giám đốc đã duyệt — chờ thanh toán!</b>').catch(()=>{});
+      }
+      // If "Đã thanh toán" pressed → ask for receipt
+      else if(newStatus==='awaiting_receipt'){
+        await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+          text:'🧾 <b>Yêu cầu ủy nhiệm chi</b>'+(tagLine?'\n'+tagLine:'')+'\n\n🔖 <b>'+updated.code+'</b>\n💰 <b>'+formatMoney(updated.amount)+'</b>'+propTag2+accTag2+apvTag2+'\n\n📎 Vui lòng <b>gửi ảnh/file ủy nhiệm chi</b> vào đây để hoàn tất quy trình.\nDùng lệnh: <code>/receipt '+updated.id+'</code> + đính kèm ảnh'
+        }).catch(()=>{});
+      }
+      // Other statuses → normal notification
+      else {
+        await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
+          text:st.icon+' <b>'+st.label+'</b>'+(tagLine?'\n'+tagLine:'')+'\n\n🔖 <b>'+updated.code+'</b>\n📝 '+updated.description+'\n💰 <b>'+formatMoney(updated.amount)+'</b>'+propTag2+accTag2+apvTag2+'\n\n👆 Xử lý bởi: <b>'+presserName+'</b>'
+        }).catch(()=>{});
+        // If KT approved → re-send with GĐ approval buttons
+        if(newStatus==='acc_approved'){
+          await notifyPayment(updated,'📋 <b>Kế toán đã duyệt — chờ Giám đốc phê duyệt!</b>').catch(()=>{});
+        }
+      }
     }
   }catch(e){}
 }
@@ -2051,10 +2126,13 @@ function renderReminderModal(){
 
 // ─── Payment Proposal Feature ─────────────────────────────────────────────────
 const PAYMENT_STATUS={
-  pending:{label:'Chờ duyệt',bg:'#FFFBEB',c:'#D97706',border:'#FDE68A',icon:'⏳'},
-  approved:{label:'Đã duyệt',bg:'#ECFDF5',c:'#059669',border:'#A7F3D0',icon:'✅'},
-  rejected:{label:'Từ chối',bg:'#FEF2F2',c:'#DC2626',border:'#FECACA',icon:'❌'},
-  paid:{label:'Đã thanh toán',bg:'#EFF6FF',c:'#2563EB',border:'#BFDBFE',icon:'💳'},
+  pending:      {label:'Chờ kế toán duyệt', bg:'#FFFBEB',c:'#D97706',border:'#FDE68A',icon:'⏳'},
+  acc_approved: {label:'KT đã duyệt — Chờ GĐ',bg:'#F0FDF4',c:'#15803D',border:'#BBF7D0',icon:'📋'},
+  acc_rejected: {label:'KT từ chối',          bg:'#FEF2F2',c:'#DC2626',border:'#FECACA',icon:'❌'},
+  approved:     {label:'GĐ đã duyệt',         bg:'#ECFDF5',c:'#059669',border:'#A7F3D0',icon:'✅'},
+  rejected:     {label:'GĐ từ chối',           bg:'#FEF2F2',c:'#DC2626',border:'#FECACA',icon:'❌'},
+  awaiting_receipt:{label:'Chờ ủy nhiệm chi',  bg:'#EFF6FF',c:'#2563EB',border:'#BFDBFE',icon:'🧾'},
+  paid:         {label:'Đã thanh toán',        bg:'#E0F2FE',c:'#0369A1',border:'#BAE6FD',icon:'💳'},
 };
 
 function formatMoney(n){
@@ -2202,6 +2280,7 @@ function renderPaymentsView(mobile){
         p.approver?div({style:{fontSize:12,color:'var(--text2)',background:'var(--bg)',padding:'3px 8px',borderRadius:4}},['✓ '+(p.approver||'—')]):null,
       ].filter(Boolean)),
       div({style:{fontSize:11,color:'var(--text3)'}},['🏦 '+(bank?bank.name:p.bankCode||'—')+' · '+p.accountNo+(p.accountName?' · '+p.accountName:'')]),
+      p.receiptFileId?div({style:{fontSize:11,color:'#0369a1',background:'#e0f2fe',border:'1px solid #bae6fd',borderRadius:4,padding:'2px 7px',display:'inline-block',marginTop:4}},['🧾 Đã có ủy nhiệm chi']):null,
     ]);
     card.addEventListener('click',()=>openPaymentModal(p));
     wrap.appendChild(card);
@@ -2259,9 +2338,12 @@ function renderPaymentModal(){
 
   // Status select (for approver)
   const statusSel=el('select',{className:'input',style:{background:'white'}},[
-    el('option',{value:'pending',selected:form.status==='pending'},['⏳ Chờ duyệt']),
-    el('option',{value:'approved',selected:form.status==='approved'},['✅ Đã duyệt']),
-    el('option',{value:'rejected',selected:form.status==='rejected'},['❌ Từ chối']),
+    el('option',{value:'pending',selected:form.status==='pending'},['⏳ Chờ kế toán duyệt']),
+    el('option',{value:'acc_approved',selected:form.status==='acc_approved'},['📋 KT đã duyệt — Chờ GĐ']),
+    el('option',{value:'acc_rejected',selected:form.status==='acc_rejected'},['❌ KT từ chối']),
+    el('option',{value:'approved',selected:form.status==='approved'},['✅ GĐ đã duyệt']),
+    el('option',{value:'rejected',selected:form.status==='rejected'},['❌ GĐ từ chối']),
+    el('option',{value:'awaiting_receipt',selected:form.status==='awaiting_receipt'},['🧾 Chờ ủy nhiệm chi']),
     el('option',{value:'paid',selected:form.status==='paid'},['💳 Đã thanh toán']),
   ]);
   statusSel.addEventListener('change',e=>silent('status',e.target.value));
@@ -2443,6 +2525,17 @@ function renderPayTgCfgModal(){
     makeField('Bot Token',[div({style:{display:'flex',gap:8}},[tokenInp])]),
     makeField('Chat ID / Group ID',[div({style:{display:'flex',gap:8}},[chatIdInp,testBtn])]),
     errDiv,okDiv,
+    div({style:{background:'var(--bg)',borderRadius:'var(--r8)',padding:'12px 14px',marginTop:8,border:'1px solid var(--border)'}},[
+      div({style:{fontSize:11,fontWeight:700,color:'var(--text2)',marginBottom:10,textTransform:'uppercase',letterSpacing:'.04em'}},['👥 Phân quyền duyệt (tùy chọn)']),
+      makeField('📊 Username Kế toán (@username)',[
+        (()=>{
+          const i=inp({className:'input',value:cfg.accountantTg||'',placeholder:'username kế toán (không có @)'});
+          i.addEventListener('input',e=>{cfg.accountantTg=e.target.value.replace(/^@/,'');});
+          return i;
+        })(),
+        div({style:{fontSize:11,color:'var(--text3)',marginTop:3}},['Kế toán duyệt/từ chối trước, sau đó Giám đốc duyệt cuối.']),
+      ]),
+    ]),
     div({style:{display:'flex',gap:8,paddingTop:'1rem',borderTop:'1px solid var(--border)'}},[
       cfg.token?btn({className:'btn btn-danger',style:{fontSize:12},onClick:()=>{
         savePayTgCfg({token:'',chatId:''});
@@ -2454,7 +2547,7 @@ function renderPayTgCfgModal(){
         const tok=tokenInp.value.trim();
         const cid=chatIdInp.value.trim();
         if(!tok||!cid){errDiv.textContent='Nhập đủ token và chat ID!';errDiv.style.display='block';return;}
-        savePayTgCfg({token:tok,chatId:cid});
+        savePayTgCfg({token:tok,chatId:cid,accountantTg:cfg.accountantTg||''});
         showToast('✅ Đã lưu cấu hình!');
         setState({modal:null});
       }},['Lưu']),
