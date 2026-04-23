@@ -2188,10 +2188,10 @@ function render(){
         div({style:{minWidth:0}},[
           div({style:{fontWeight:700,fontSize:14,color:'var(--text1)',letterSpacing:'-.02em',lineHeight:1.2}},['Task Tracker AI']),
         ]),
-        !mobile?div({style:{display:'flex',gap:2,marginLeft:8,background:'var(--bg)',borderRadius:'var(--r8)',padding:3,border:'1px solid var(--border)'}},[
-          btn({style:{padding:'5px 12px',borderRadius:6,border:'none',fontSize:12,fontWeight:600,background:S.activeView==='tasks'?'white':'transparent',color:S.activeView==='tasks'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='tasks'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'tasks'})},['📋 Tasks']),
-          btn({style:{padding:'5px 12px',borderRadius:6,border:'none',fontSize:12,fontWeight:600,background:S.activeView==='payments'?'white':'transparent',color:S.activeView==='payments'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='payments'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'payments'})},['💳 Thanh toán']),
-        ]):null,
+        div({style:{display:'flex',gap:2,marginLeft:mobile?4:8,background:'var(--bg)',borderRadius:'var(--r8)',padding:3,border:'1px solid var(--border)'}},[
+          btn({style:{padding:mobile?'5px 8px':'5px 12px',borderRadius:6,border:'none',fontSize:mobile?11:12,fontWeight:600,background:S.activeView==='tasks'?'white':'transparent',color:S.activeView==='tasks'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='tasks'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'tasks'})},[mobile?'📋':'📋 Tasks']),
+          btn({style:{padding:mobile?'5px 8px':'5px 12px',borderRadius:6,border:'none',fontSize:mobile?11:12,fontWeight:600,background:S.activeView==='payments'?'white':'transparent',color:S.activeView==='payments'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='payments'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'payments'})},[mobile?'💳':'💳 Thanh toán']),
+        ]),
       ]),
       div({style:{display:'flex',alignItems:'center',gap:8,flexShrink:0}},[
         !mobile?div({style:{display:'flex',gap:4}},[
@@ -3244,7 +3244,7 @@ function renderPaymentsView(mobile){
         });
         updateBulkBar();
       }},['☑ Chọn tất cả']),
-      btn({className:'btn btn-primary',style:{fontSize:13},onClick:()=>openPaymentModal(null)},['+ Tạo đề xuất']),
+      btn({className:'btn btn-primary',style:{fontSize:13},onClick:()=>openPaymentModal(null)},[mobile?'+ Đề xuất':'+ Tạo đề xuất']),
     ]),
   ]));
 
