@@ -3202,6 +3202,80 @@ function renderLoginModal(){
   showModal(modalEl, false); // false = không cho đóng bằng click ngoài
 }
 
+
+// ─── Payment Detail Modal ─────────────────────────────────────────────────────
+function openPaymentDetailModal(p){
+  const bank=VIET_BANKS.find(b=>b.code===p.bankCode);
+  const bankName=bank?bank.name:(p.bankCode||'');
+  const st=PAYMENT_STATUS[p.status]||PAYMENT_STATUS.pending;
+
+  const row=(label,value,mono=false)=>value?div({style:{display:'flex',gap:8,padding:'8px 0',borderBottom:'1px solid var(--border)'}},[
+    div({style:{fontSize:12,color:'var(--text3)',width:120,flexShrink:0,paddingTop:1}},[label]),
+    div({style:{fontSize:13,fontWeight:500,color:'var(--text1)',flex:1,fontFamily:mono?'monospace':'inherit',wordBreak:'break-all'}},[value]),
+  ]):null;
+
+  const modalEl=div({className:'modal',style:{maxWidth:500}},[
+    div({className:'modal-header'},[
+      div({style:{flex:1}},[
+        div({className:'modal-title'},[p.description||'Đề xuất thanh toán']),
+        div({style:{fontSize:12,color:'var(--text3)',marginTop:2}},[p.code+' · '+new Date(p.createdAt).toLocaleDateString('vi-VN')]),
+      ]),
+      btn({className:'modal-close',onClick:()=>setState({modal:null,modalData:null})},['×']),
+    ]),
+
+    // Status badge
+    div({style:{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',borderRadius:'var(--r8)',background:st.bg,border:'1px solid '+st.border,marginBottom:16}},[
+      span({style:{fontSize:18}},[st.icon]),
+      div({},[
+        div({style:{fontSize:13,fontWeight:700,color:st.c}},[st.label]),
+        p.lastActionAt?div({style:{fontSize:11,color:st.c,opacity:.8}},['Cập nhật: '+new Date(p.lastActionAt).toLocaleString('vi-VN')]):null,
+      ]),
+    ]),
+
+    // Details
+    div({style:{background:'var(--bg)',borderRadius:'var(--r8)',padding:'4px 14px',marginBottom:12}},[
+      row('💰 Số tiền', formatMoney(p.amount)),
+      row('🏢 Nhà cung cấp', p.supplier),
+      row('📝 Nội dung CK', p.description),
+      row('🔢 Số HĐ', p.invoiceNo),
+      row('🏦 Ngân hàng', bankName),
+      row('💳 Số tài khoản', p.accountNo, true),
+      row('👤 Tên tài khoản', p.accountName),
+      row('📅 Ngày tạo', new Date(p.createdAt).toLocaleString('vi-VN')),
+    ]),
+
+    // People
+    div({style:{background:'var(--bg)',borderRadius:'var(--r8)',padding:'4px 14px',marginBottom:12}},[
+      row('👤 Người đề xuất', p.proposer+(p.proposerTg?' (@'+p.proposerTg+')':'')),
+      row('✅ Người duyệt', p.approver?(p.approver+(p.approverTg?' (@'+p.approverTg+')':'')):null),
+      row('📊 Kế toán', p.accountant?(p.accountant+(p.accountantTg?' (@'+p.accountantTg+')':'')):null),
+    ]),
+
+    // Notes
+    p.notes?div({style:{background:'#FFFBEB',borderRadius:'var(--r8)',padding:'10px 14px',marginBottom:12,fontSize:13,color:'#92400e'}},[
+      div({style:{fontSize:11,fontWeight:700,marginBottom:4}},['📌 GHI CHÚ']),
+      div({},[p.notes]),
+    ]):null,
+
+    // Photos
+    p.photoUrls&&p.photoUrls.length?div({style:{marginBottom:12}},[
+      div({style:{fontSize:11,fontWeight:700,color:'var(--text2)',marginBottom:8,textTransform:'uppercase',letterSpacing:'.04em'}},['🖼 Hình ảnh hoá đơn ('+p.photoUrls.length+')']),
+      div({style:{display:'flex',flexWrap:'wrap',gap:8}},
+        p.photoUrls.map(url=>el('a',{href:url,target:'_blank',style:{display:'block',borderRadius:8,overflow:'hidden',border:'1px solid var(--border)',width:80,height:80}},[
+          el('img',{src:url,style:{width:'100%',height:'100%',objectFit:'cover'}}),
+        ]))
+      ),
+    ]):null,
+
+    // Actions
+    div({style:{display:'flex',gap:8,paddingTop:'1rem',borderTop:'1px solid var(--border)'}},[
+      btn({className:'btn btn-secondary',onClick:()=>setState({modal:null,modalData:null})},['Đóng']),
+      (p.status==='pending')?btn({className:'btn btn-primary',onClick:()=>{setState({modal:null,modalData:null});openPaymentModal(p);}},['✏️ Sửa']):null,
+    ].filter(Boolean)),
+  ]);
+  showModal(modalEl);
+}
+
 function renderPaymentsView(mobile){
   const payments=getPayments();
   const totalPending=payments.filter(p=>p.status==='pending').reduce((s,p)=>s+Number(p.amount||0),0);
@@ -3309,6 +3383,10 @@ function renderPaymentsView(mobile){
       background:'white',borderRadius:'var(--r12)',padding:'14px 16px',marginBottom:8,
       border:'1px solid var(--border)',boxShadow:'var(--s1)',
       borderLeft:'3px solid '+st.c,display:'flex',gap:10,alignItems:'flex-start',
+      cursor:'pointer',transition:'box-shadow .12s,transform .1s',
+    },onClick:(e)=>{
+      if(e.target.closest('input[type=checkbox]')||e.target.closest('button')||e.target.closest('a'))return;
+      openPaymentDetailModal(p);
     }},[
       div({style:{paddingTop:2}}, [cb]),
       div({style:{flex:1,minWidth:0,cursor:'pointer'}},[
