@@ -3457,6 +3457,13 @@ function renderPaymentModal(){
     // Description
     field('📝 Nội dung chuyển khoản *',inp2('description','Thanh toán hóa đơn / dịch vụ...')),
 
+    // Invoice number
+    field('🔢 Số HĐ/Hợp đồng',(()=>{
+      const i=inp({className:'input',value:form.invoiceNo||'',placeholder:'VD: HĐ-2024/001'});
+      i.addEventListener('input',e=>silent('invoiceNo',e.target.value));
+      return i;
+    })()),
+
     // Bank info - vertical stacked
     div({style:{background:'var(--bg)',borderRadius:'var(--r8)',padding:'12px 14px',border:'1px solid var(--border)',marginBottom:13}},[
       div({style:{fontSize:11,fontWeight:700,color:'var(--text2)',marginBottom:12,textTransform:'uppercase',letterSpacing:'.04em'}},['🏦 Thông tin tài khoản thụ hưởng']),
