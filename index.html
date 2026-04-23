@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -340,6 +341,7 @@ function parseTemplate(text){
       if(tgMatch)result.approverTg=tgMatch[1];
       result.approver=val.replace(/@[a-zA-Z0-9_]+/,'').trim()||val;
     }
+    else if(key.includes('số hđ')||key.includes('số hợp đồng')||key.includes('số hoá đơn')||key.includes('invoice'))result.invoiceNo=val;
     else if(key.includes('ghi chú')||key.includes('note'))result.notes=val;
   }
   return result;
@@ -388,12 +390,85 @@ async function handlePaySession(token,chatId,userId,userName,pmsg,ptxt,session){
         +'🏢 '+parsed.supplier+'\n'
         +'💰 <b>'+formatMoney(parsed.amount)+'</b>\n'
         +'📝 '+parsed.description+'\n'
+        +(parsed.invoiceNo?'🔢 Số HĐ: '+parsed.invoiceNo+'\n':'')
         +'🏦 '+(bank?bank.name:parsed.bankCode)+' · '+parsed.accountNo+'\n'
         +'👤 '+parsed.accountName
         +(parsed.approver?'\n✅ Người duyệt: '+(parsed.approverTg?'@'+parsed.approverTg:parsed.approver):'')
         +(parsed.notes?'\n📌 '+parsed.notes:'')
         +'\n\nThông tin đúng chưa?'
     }).catch(()=>{});
+    return true;
+  }
+
+  // WAITING PHOTOS flow — nhận ảnh hoá đơn sau khi xác nhận
+  if(session.flow==='waiting_photos'){
+    const d=session.data;
+    const hasPhoto=pmsg.photo&&pmsg.photo.length>0;
+    const hasDoc=pmsg.document&&pmsg.document?.mime_type?.includes('image');
+    const isDone=ptxt.toLowerCase()==='xong'||ptxt.toLowerCase()==='done'||ptxt.toLowerCase()==='skip';
+
+    if(hasPhoto||hasDoc){
+      // Lưu file_id
+      const fileId=hasPhoto?pmsg.photo[pmsg.photo.length-1].file_id:pmsg.document.file_id;
+      const photos=[...(d.photos||[]),fileId];
+      setSession(userId,{...session,data:{...d,photos}});
+      await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+        reply_markup:{force_reply:true,selective:false,input_field_placeholder:'Gửi thêm ảnh hoặc gõ xong...'},
+        text:'✅ Đã nhận ảnh '+(photos.length)+'. Gửi thêm ảnh khác hoặc gõ <b>xong</b> để hoàn tất.'
+      }).catch(()=>{});
+      return true;
+    }
+
+    if(isDone||!hasPhoto){
+      // Tạo đề xuất
+      clearSession(userId);
+      const photos=d.photos||[];
+      const newPay={id:'pay_'+Date.now(),code:genPaymentCode(),
+        proposer:d.proposer||userName,proposerTg:d.proposerTg||'',
+        approver:d.approver||'',approverTg:d.approverTg||'',
+        supplier:d.supplier,amount:d.amount,description:d.description,
+        invoiceNo:d.invoiceNo||'',
+        bankCode:d.bankCode||'970432',accountNo:d.accountNo,accountName:d.accountName,
+        notes:d.notes||'',status:'pending',createdAt:new Date().toISOString()
+      };
+      savePayments([...getPayments(),newPay]);
+
+      // Gửi thông báo text
+      const sent=await notifyPayment(newPay,'💳 <b>Đề xuất thanh toán mới!</b>').catch(()=>null);
+      if(sent?.message_id){
+        const list=getPayments();
+        const idx=list.findIndex(p=>p.id===newPay.id);
+        if(idx>=0){list[idx]={...list[idx],tgMsgId:sent.message_id};lsSet('tt_payments',list);}
+      }
+
+      // Gửi QR
+      await notifyPaymentWithQR(newPay).catch(()=>{});
+
+      // Gửi album ảnh hoá đơn
+      if(photos.length>0){
+        try{
+          const photoCaption='🧾 <b>Hoá đơn đề xuất '+newPay.code+'</b>\n📝 '+newPay.description+'\n💰 '+formatMoney(newPay.amount)+(newPay.invoiceNo?'\n🔢 Số HĐ: '+newPay.invoiceNo:'');
+          if(photos.length===1){
+            await tgCall(token,'sendPhoto',{
+              chat_id:chatId,photo:photos[0],parse_mode:'HTML',caption:photoCaption
+            });
+          } else {
+            // Gửi media group (album)
+            const media=photos.map((fid,i)=>({
+              type:'photo',media:fid,
+              ...(i===0?{caption:photoCaption,parse_mode:'HTML'}:{})
+            }));
+            await tgCall(token,'sendMediaGroup',{chat_id:chatId,media});
+          }
+        }catch(e){console.warn('send photos:',e.message);}
+      }
+
+      await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
+        text:'✅ Đã tạo <b>'+newPay.code+'</b> · '+formatMoney(newPay.amount)+(photos.length?'\n📎 '+photos.length+' ảnh hoá đơn đã gửi.':'')
+      }).catch(()=>{});
+      syncToSheet(newPay).catch(()=>{});
+      return true;
+    }
     return true;
   }
 
@@ -813,12 +888,13 @@ async function pollPaymentBot(){
                 +'Nhà cung cấp: \n'
                 +'Số tiền: \n'
                 +'Nội dung CK: \n'
+                +'Số HĐ/HĐ: \n'
                 +'Ngân hàng: \n'
                 +'Số TK: \n'
                 +'Tên TK: \n'
                 +'Người duyệt: \n'
                 +'Ghi chú: </code>\n\n'
-                +'💡 <i>Ngân hàng: nhập tên (ACB, VCB, MB, TCB, VPB...)\nNgười duyệt: nhập @username Telegram của quản lý\nSau khi xác nhận, QR sẽ được gửi tự động.</i>\n\nNhắn <b>hủy</b> để thoát.'
+                +'💡 <i>Ngân hàng: nhập tên (ACB, VCB, MB, TCB, VPB...)\nNgười duyệt: nhập @username Telegram của quản lý\nSau khi xác nhận bot sẽ hỏi đính kèm hình ảnh hoá đơn.</i>\n\nNhắn <b>hủy</b> để thoát.'
             }).catch(()=>{});
           }
           continue;
@@ -997,18 +1073,11 @@ async function pollPaymentBot(){
         clearSession(sessUserId);
         if(choice==='ok'&&sess&&sess.data){
           const d=sess.data;
-          const newPay2={id:'pay_'+Date.now(),code:genPaymentCode(),
-            proposer:d.proposer||presserName,proposerTg:presserUsername,
-            approver:d.approver||'',approverTg:d.approverTg||'',
-            supplier:d.supplier,amount:d.amount,description:d.description,
-            bankCode:d.bankCode||'970432',accountNo:d.accountNo,accountName:d.accountName,
-            notes:d.notes||'',status:'pending',createdAt:new Date().toISOString()};
-          savePayments([...getPayments(),newPay2]);
-          await notifyPayment(newPay2,'💳 <b>Đề xuất thanh toán mới!</b>').catch(()=>{});
-          // Always send QR right after creating
-          await notifyPaymentWithQR(newPay2).catch(()=>{});
+          // Chuyển sang flow chờ ảnh hoá đơn
+          setSession(sessUserId,{flow:'waiting_photos',data:{...d,proposer:d.proposer||presserName,proposerTg:presserUsername,photos:[]}});
           await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,parse_mode:'HTML',
-            text:'✅ Đã tạo <b>'+newPay2.code+'</b> · '+formatMoney(newPay2.amount)+'\n🔲 Mã QR đã được gửi bên trên.\n✅ Đã đồng bộ vào hệ thống.'
+            reply_markup:{force_reply:true,selective:false,input_field_placeholder:'Gửi ảnh hoá đơn/hợp đồng...'},
+            text:'📎 <b>Đính kèm hình ảnh hoá đơn/hợp đồng</b>\n\nGửi 1 hoặc nhiều ảnh để kế toán kiểm tra.\nGõ <b>xong</b> nếu không có ảnh hoặc đã gửi đủ.'
           }).catch(()=>{});
         } else {
           await tgCall(cfg.token,'sendMessage',{chat_id:cfg.chatId,text:'❌ Đã hủy.'}).catch(()=>{});
