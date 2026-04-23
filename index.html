@@ -279,10 +279,10 @@ function getAllTgConfigs(cats){
   (cats||[]).forEach(c=>{const tg=getCatTg(c);if(tg)seen.set(tg.token+'|'+tg.chatId,tg);});
   return[...seen.values()];
 }
-function saveTasks(nt){setState({tasks:nt});lsSet('tt_tasks',nt);lsSet('tt_sync_lastpush',Date.now());scheduleSyncPush();}
-function saveCats(nc){setState({categories:nc});lsSet('tt_categories',nc);lsSet('tt_sync_lastpush',Date.now());scheduleSyncPush();}
+function saveTasks(nt){setState({tasks:nt});lsSet('tt_tasks',nt);scheduleSyncPush();}
+function saveCats(nc){setState({categories:nc});lsSet('tt_categories',nc);scheduleSyncPush();}
 function getPayments(){return lsGet('tt_payments')||[];}
-function savePayments(list){lsSet('tt_payments',list);lsSet('tt_sync_lastpush',Date.now());scheduleSyncPush();render();}
+function savePayments(list){lsSet('tt_payments',list);scheduleSyncPush();render();}
 function genPaymentCode(){return 'PT'+Date.now().toString(36).toUpperCase().slice(-6);}
 function getPayTgCfg(){return lsGet('tt_pay_tg_cfg')||{token:'',chatId:''};}
 function savePayTgCfg(cfg){lsSet('tt_pay_tg_cfg',cfg);}
@@ -1269,7 +1269,7 @@ async function syncPull(){
     if(Array.isArray(data.payments))lsSet('tt_payments',data.payments);
     if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
     if(data.payTgCfg&&data.payTgCfg.token)lsSet('tt_pay_tg_cfg',data.payTgCfg);
-    if(data.savedAt)lsSet('tt_sync_lastpush',new Date(data.savedAt).getTime());
+    if(data.savedAt){lsSet('tt_sync_lastpull',new Date(data.savedAt).getTime());lsSet('tt_sync_lastpush',new Date(data.savedAt).getTime());}
     setState({syncStatus:'ok',syncMsg:'Đã đồng bộ '+new Date().toLocaleTimeString('vi-VN')+'  ('+
       (S.tasks||[]).length+'T '+(data.payments||[]).length+'P)'});
     return true;
@@ -1291,9 +1291,10 @@ async function syncPullIfNewer(){
     const data=await res.json();
     if(!data)return;
     const cloudSavedAt=data.savedAt?new Date(data.savedAt).getTime():0;
-    const localLastPush=lsGet('tt_sync_lastpush')||0;
-    // Chỉ pull khi cloud thực sự mới hơn local
-    if(cloudSavedAt<=localLastPush+3000)return;
+    // Dùng lastpull riêng — không nhầm với lastpush của thiết bị này
+    const lastPull=lsGet('tt_sync_lastpull')||0;
+    // Chỉ pull khi cloud có data mới hơn lần pull trước
+    if(cloudSavedAt<=lastPull+1000)return;
     console.log('[sync] cloud newer → pulling all data...');
 
     // Tasks & categories
@@ -1318,7 +1319,7 @@ async function syncPullIfNewer(){
     }
     if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
     if(data.payTgCfg&&data.payTgCfg.token)lsSet('tt_pay_tg_cfg',data.payTgCfg);
-    lsSet('tt_sync_lastpush',cloudSavedAt);
+    lsSet('tt_sync_lastpull',cloudSavedAt);
     setState({syncStatus:'ok',syncMsg:'↓ Đồng bộ '+new Date().toLocaleTimeString('vi-VN')});
     console.log('[sync] all data updated — tasks:'+(S.tasks||[]).length);
   }catch(e){
