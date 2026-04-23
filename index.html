@@ -131,12 +131,7 @@ select.input{
 <div id="app"></div>
 
 <script>
-const LOGIN_SESSION_HOURS=8;
-function getLoginPasswords(){
-  const saved=lsGet('tt_passwords');
-  return saved||{staff:'nhanvien123',manager:'quanly123'};
-}
-function saveLoginPasswords(p){lsSet('tt_passwords',p);}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function lsGet(k){try{const v=localStorage.getItem(k);if(!v)return null;const p=JSON.parse(v);return p;}catch{localStorage.removeItem(k);return null;}}
 function lsSet(k,v){
@@ -1477,15 +1472,7 @@ async function init(){
   if(_t!==null)lsSet('tt_tasks',_t);
   if(_c!==null)lsSet('tt_categories',_c);
   setState({tasks,categories:cats,loading:false});
-  // Kiểm tra đăng nhập
-  const savedRole=lsGet('tt_role');
-  const savedRoleExp=lsGet('tt_role_exp')||0;
-  if(savedRole&&Date.now()<savedRoleExp){
-    S.role=savedRole;
-  } else {
-    lsSet('tt_role',null);
-    setTimeout(()=>setState({modal:'login'}),100);
-  }
+
   // Auto-pull khi mở app (chỉ lần đầu, _pendingPush chắc chắn false lúc này)
   const cfg=getSyncCfg();
   if(cfg&&cfg.apiKey&&cfg.binId){
@@ -2203,7 +2190,7 @@ function render(){
         ]),
         !mobile?div({style:{display:'flex',gap:2,marginLeft:8,background:'var(--bg)',borderRadius:'var(--r8)',padding:3,border:'1px solid var(--border)'}},[
           btn({style:{padding:'5px 12px',borderRadius:6,border:'none',fontSize:12,fontWeight:600,background:S.activeView==='tasks'?'white':'transparent',color:S.activeView==='tasks'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='tasks'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'tasks'})},['📋 Tasks']),
-          S.role==='manager'?btn({style:{padding:'5px 12px',borderRadius:6,border:'none',fontSize:12,fontWeight:600,background:S.activeView==='payments'?'white':'transparent',color:S.activeView==='payments'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='payments'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'payments'})},['💳 Thanh toán']):null,
+          btn({style:{padding:'5px 12px',borderRadius:6,border:'none',fontSize:12,fontWeight:600,background:S.activeView==='payments'?'white':'transparent',color:S.activeView==='payments'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='payments'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'payments'})},['💳 Thanh toán']),
         ]):null,
       ]),
       div({style:{display:'flex',alignItems:'center',gap:8,flexShrink:0}},[
@@ -2336,8 +2323,7 @@ function render(){
   if(S.modal==='reminder')renderReminderModal();
   if(S.modal==='payEdit')renderPaymentModal();
   if(S.modal==='payTgCfg')renderPayTgCfgModal();
-  if(S.modal==='login'){renderLoginModal();return;}
-  if(S.modal==='changePass'){renderChangePassModal();return;}
+
   if(S.modal==='welcome')renderWelcomeModal();
 
   // ── Toast ──
