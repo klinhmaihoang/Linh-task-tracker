@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -405,17 +404,13 @@ async function handlePaySession(token,chatId,userId,userName,pmsg,ptxt,session){
     const d=session.data;
     const hasPhoto=pmsg.photo&&pmsg.photo.length>0;
     const hasDoc=pmsg.document&&pmsg.document?.mime_type?.includes('image');
-    const isDone=ptxt.toLowerCase()==='xong'||ptxt.toLowerCase()==='done'||ptxt.toLowerCase()==='skip';
+    const isDone=ptxt.toLowerCase()==='xong'||ptxt.toLowerCase()==='done'||ptxt.toLowerCase()==='skip'||ptxt.toLowerCase()==='bỏ qua';
 
     if(hasPhoto||hasDoc){
-      // Lưu file_id
+      // Lưu file_id — không thông báo từng ảnh
       const fileId=hasPhoto?pmsg.photo[pmsg.photo.length-1].file_id:pmsg.document.file_id;
       const photos=[...(d.photos||[]),fileId];
       setSession(userId,{...session,data:{...d,photos}});
-      await tgCall(token,'sendMessage',{chat_id:chatId,parse_mode:'HTML',
-        reply_markup:{force_reply:true,selective:false,input_field_placeholder:'Gửi thêm ảnh hoặc gõ xong...'},
-        text:'✅ Đã nhận ảnh '+(photos.length)+'. Gửi thêm ảnh khác hoặc gõ <b>xong</b> để hoàn tất.'
-      }).catch(()=>{});
       return true;
     }
 
@@ -3611,4 +3606,3 @@ init();
 </script>
 </body>
 </html>
-
