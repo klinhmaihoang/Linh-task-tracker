@@ -242,7 +242,7 @@ const S={
   modal:null, // null | 'task' | 'settings' | 'manageCats' | 'catEdit' | 'pwd' | 'sync' | 'reminder'
   modalData:null,
   filter:'all',
-  selectedCatId:'all',
+  selectedCatId:null, // null = chọn cat đầu tiên sau khi load,
   unlockedCats:new Set(),
   activeCol:'todo',
   sidebarOpen:false,
@@ -1503,7 +1503,9 @@ async function init(){
   // If we loaded real data, immediately re-save to refresh localStorage TTL
   if(_t!==null)lsSet('tt_tasks',_t);
   if(_c!==null)lsSet('tt_categories',_c);
-  setState({tasks,categories:cats,loading:false});
+  // Chọn category đầu tiên không có mật khẩu làm mặc định
+  const defaultCat=cats.find(c=>!c.passwordHash)||cats[0];
+  setState({tasks,categories:cats,loading:false,selectedCatId:defaultCat?defaultCat.id:null});
 
   // Auto-pull khi mở app (chỉ lần đầu, _pendingPush chắc chắn false lúc này)
   const cfg=getSyncCfg();
@@ -2157,15 +2159,7 @@ function renderCatPanel(onClose){
   ]);
   wrap.appendChild(hdr);
 
-  const allBtn=btn({
-    style:{width:'100%',display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderRadius:'var(--r8)',border:'none',
-      background:S.selectedCatId==='all'?'var(--accent)':'transparent',
-      color:S.selectedCatId==='all'?'white':'var(--text2)',
-      fontSize:13,fontWeight:S.selectedCatId==='all'?600:400,marginBottom:2,textAlign:'left'},
-    onClick:()=>{setState({selectedCatId:'all',sidebarOpen:false})}
-  },['Tất cả']);
-  wrap.appendChild(allBtn);
-
+  
   for(const cat of cats){
     const locked=cat.passwordHash&&!S.unlockedCats.has(cat.id);
     const isSel=S.selectedCatId===cat.id;
@@ -2211,11 +2205,11 @@ function render(){
   const tasks=S.tasks||[];
   const cats=S.categories||[];
   const anyConnected=getAllTgConfigs(S.categories||[]).length>0;
-  const selectedCat=S.selectedCatId!=='all'?cats.find(c=>c.id===S.selectedCatId):null;
+  const selectedCat=S.selectedCatId?cats.find(c=>c.id===S.selectedCatId):null;
 
   // Filter visible tasks
   let visible=tasks;
-  if(S.selectedCatId!=='all')visible=visible.filter(t=>t.categoryId===S.selectedCatId);
+  if(S.selectedCatId)visible=visible.filter(t=>t.categoryId===S.selectedCatId);
   if(S.filter==='overdue')visible=visible.filter(t=>t.status!=='done'&&diffMins(t.deadline)<0);
   else if(S.filter==='today')visible=visible.filter(t=>t.status!=='done'&&diffDays(t.deadline)===0);
   else if(S.filter==='upcoming')visible=visible.filter(t=>t.status!=='done'&&diffDays(t.deadline)>0&&diffDays(t.deadline)<=3);
