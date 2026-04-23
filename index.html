@@ -578,6 +578,7 @@ async function syncToSheet(payment){
   }catch(e){console.warn('syncToSheet:',e.message);}
 }
 
+let _pollLock=false;
 async function pollPaymentBot(){
   if(_pollLock)return;
   _pollLock=true;
@@ -3541,4 +3542,3 @@ init();
 </script>
 </body>
 </html>
-
