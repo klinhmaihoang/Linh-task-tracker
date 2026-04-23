@@ -131,8 +131,12 @@ select.input{
 <div id="app"></div>
 
 <script>
-const LOGIN_PASSWORDS={staff:'nhanvien123',manager:'quanly123'};
 const LOGIN_SESSION_HOURS=8;
+function getLoginPasswords(){
+  const saved=lsGet('tt_passwords');
+  return saved||{staff:'nhanvien123',manager:'quanly123'};
+}
+function saveLoginPasswords(p){lsSet('tt_passwords',p);}
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function lsGet(k){try{const v=localStorage.getItem(k);if(!v)return null;const p=JSON.parse(v);return p;}catch{localStorage.removeItem(k);return null;}}
 function lsSet(k,v){
@@ -2333,6 +2337,7 @@ function render(){
   if(S.modal==='payEdit')renderPaymentModal();
   if(S.modal==='payTgCfg')renderPayTgCfgModal();
   if(S.modal==='login'){renderLoginModal();return;}
+  if(S.modal==='changePass'){renderChangePassModal();return;}
   if(S.modal==='welcome')renderWelcomeModal();
 
   // ── Toast ──
@@ -3103,19 +3108,53 @@ function showPhotoLightbox(urls, startIdx=0){
 }
 
 
+
+function renderChangePassModal(){
+  const cur=getLoginPasswords();
+  let newStaff=cur.staff, newManager=cur.manager;
+  let msg='';
+
+  const field=(label,val,onChange)=>div({style:{marginBottom:12}},[
+    div({style:{fontSize:12,fontWeight:600,color:'var(--text2)',marginBottom:4}},[label]),
+    (() => {
+      const inp=el('input',{type:'text',value:val,style:{width:'100%',padding:'8px 12px',borderRadius:'var(--r8)',border:'1.5px solid var(--border2)',fontSize:14,boxSizing:'border-box'}});
+      inp.addEventListener('input',e=>onChange(e.target.value));
+      return inp;
+    })()
+  ]);
+
+  const modalEl=div({className:'modal',style:{maxWidth:400}},[
+    div({style:{fontSize:17,fontWeight:800,marginBottom:16,color:'var(--text1)'}},[' 🔑 Quản lý mật khẩu']),
+    field('Mật khẩu Nhân viên (Tasks)',newStaff,v=>newStaff=v),
+    field('Mật khẩu Quản lý (Tasks + Thanh toán)',newManager,v=>newManager=v),
+    msg?div({style:{color:'#059669',fontSize:13,marginBottom:8,fontWeight:600}},[msg]):null,
+    div({style:{display:'flex',gap:8}},[
+      btn({className:'btn btn-secondary',style:{flex:1},onClick:()=>setState({modal:null})},['Hủy']),
+      btn({className:'btn btn-primary',style:{flex:1},onClick:()=>{
+        if(!newStaff||!newManager){showToast('❌ Mật khẩu không được để trống');return;}
+        if(newStaff===newManager){showToast('❌ 2 mật khẩu không được giống nhau');return;}
+        saveLoginPasswords({staff:newStaff,manager:newManager});
+        showToast('✅ Đã lưu mật khẩu mới!');
+        setState({modal:null});
+      }},['💾 Lưu']),
+    ]),
+  ].filter(Boolean));
+  showModal(modalEl);
+}
+
 function renderLoginModal(){
   const [pass, setPass] = [()=>'', null];
   let inputVal='';
   let errMsg='';
 
   function tryLogin(){
-    if(inputVal===LOGIN_PASSWORDS.manager){
+    if(inputVal===getLoginPasswords().manager){
       S.role='manager';
       lsSet('tt_role','manager');
       lsSet('tt_role_exp',Date.now()+LOGIN_SESSION_HOURS*3600*1000);
       setState({modal:null,activeView:'tasks'});
       showToast('👋 Xin chào Quản lý!');
-    } else if(inputVal===LOGIN_PASSWORDS.staff){
+    } else if(inputVal===getLoginPasswords().staff){
       S.role='staff';
       lsSet('tt_role','staff');
       lsSet('tt_role_exp',Date.now()+LOGIN_SESSION_HOURS*3600*1000);
