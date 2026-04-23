@@ -1519,8 +1519,18 @@ async function init(){
   }
   startBotPolling();
   startDeadlineReminder();
-  // Auto-pull thông minh mỗi 20s — chỉ pull khi cloud mới hơn local
+  // Auto-pull thông minh mỗi 8s — chỉ pull khi cloud mới hơn local
   setInterval(()=>{ syncPullIfNewer().catch(()=>{}); }, 8000);
+
+  // Đọc URL hash để mặc định vào tab đúng
+  // #payments → tab Thanh toán, mặc định luôn vào Thanh toán nếu không có hash
+  const hash=window.location.hash.replace('#','');
+  if(hash==='tasks'){
+    setState({activeView:'tasks'});
+  } else {
+    // Mặc định vào Thanh toán
+    setState({activeView:'payments'});
+  }
   // Poll Sepay API mỗi 30s
   setInterval(()=>{ pollSepayAPI().catch(()=>{}); }, 30000);
 }
