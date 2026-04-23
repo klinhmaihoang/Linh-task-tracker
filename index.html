@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>Task Tracker AI</title>
+<title>Task Tracker AI v10.13</title>
 <style>
 :root{
   --bg:#F4F5F7;--surface:#FFFFFF;--surface2:#F9FAFB;
@@ -1470,7 +1470,7 @@ async function init(){
 
   // Auto-pull khi mở app (chỉ lần đầu, _pendingPush chắc chắn false lúc này)
   const cfg=getSyncCfg();
-  if(cfg&&cfg.apiKey&&cfg.binId){
+  if(cfg&&(cfg.workerUrl||(cfg.apiKey&&cfg.binId))){
     _pendingPush=false;
     syncPull().catch(e=>{
       console.warn('syncPull on init failed:',e.message);
@@ -1510,7 +1510,13 @@ async function pollOneBot(token,chatId){
   const myCatIds=new Set(myCats.map(c=>c.id));
   const _ok=token+'|'+chatId;
   const offset=getOffset(_ok);
-  const updates=await tgCall(token,'getUpdates?offset='+offset+'&timeout=0&limit=10');
+  const updates=await tgCall(token,'getUpdates?offset='+offset+'&timeout=0&limit=10').catch(e=>{
+    // 409 = conflict (multiple polling instances) — give up leader role
+    if(e.message&&(e.message.includes('409')||e.message.toLowerCase().includes('conflict'))){
+      amLeader=false;lsSet('tt_poll_lock',null);
+    }
+    throw e;
+  });
   for(const u of updates){
     setOffset(_ok,u.update_id+1);
     const msg=u.message;
@@ -1944,7 +1950,8 @@ function startBotPolling(){
   function claimLeader(){
     const now=Date.now();
     const lock=lsGet('tt_poll_lock');
-    if(lock&&lock.id!==tabId&&(now-lock.ts)<3000){amLeader=false;return false;}
+    // Tăng TTL lên 6s để tránh race condition giữa các tab
+    if(lock&&lock.id!==tabId&&(now-lock.ts)<6000){amLeader=false;return false;}
     amLeader=true;
     lsSet('tt_poll_lock',{id:tabId,ts:now});
     bc.postMessage({type:'claim',id:tabId});
@@ -1971,9 +1978,9 @@ function startBotPolling(){
     }finally{isPolling=false;}
   }
 
-  // Poll every 1.5 seconds for faster response
+  // Poll every 3 seconds — giảm từ 1.5s để tránh lỗi 409 khi nhiều tab
   setTimeout(()=>claimLeader(),Math.random()*500);
-  setInterval(doPoll,1500);
+  setInterval(doPoll,3000);
 
   // Poll immediately when tab becomes visible
   document.addEventListener('visibilitychange',()=>{
