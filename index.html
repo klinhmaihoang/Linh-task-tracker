@@ -2724,8 +2724,8 @@ function makeSelect(name,value,options,onChange){
 
 // ─── Sync Modal ───────────────────────────────────────────────────────────────
 function renderWelcomeModal(){
-  const apiKeyInp=inp({className:'input',type:'password',placeholder:'$2b$10$xxxxxxxx... (API Key JSONBin)',style:{fontFamily:'monospace',fontSize:12}});
-  const binIdInp=inp({className:'input',placeholder:'Bin ID từ thiết bị cũ (để trống nếu tạo mới)',style:{fontFamily:'monospace',fontSize:12}});
+  const WORKER_URL='https://sepay-webhook.klinh-maihoang.workers.dev';
+  const workerInp=inp({className:'input',value:WORKER_URL,placeholder:'https://your-worker.workers.dev',style:{fontFamily:'monospace',fontSize:12}});
   const statusDiv=div({style:{fontSize:12,padding:'8px 12px',borderRadius:'var(--r8)',display:'none',marginTop:8,fontWeight:500}});
   function setStatus(msg,type){
     statusDiv.textContent=msg;statusDiv.style.display='block';
@@ -2733,26 +2733,18 @@ function renderWelcomeModal(){
     Object.assign(statusDiv.style,{background:c.bg,color:c.c,border:'1px solid '+c.border});
   }
   const syncBtn=btn({className:'btn btn-primary',style:{flex:1},onClick:async()=>{
-    const key=apiKeyInp.value.trim();
-    if(!key){setStatus('❌ Nhập API Key trước!','error');return;}
+    const workerUrl=workerInp.value.trim().replace(/\/$/,'');
+    if(!workerUrl){setStatus('❌ Nhập Worker URL!','error');return;}
     syncBtn.textContent='⟳ Đang kết nối...';syncBtn.disabled=true;
     try{
-      let binId=binIdInp.value.trim();
-      if(!binId){
-        setStatus('⟳ Đang tạo kho dữ liệu mới...','info');
-        binId=await syncCreateBin(key);
-      } else {
-        setStatus('⟳ Đang tải dữ liệu từ cloud...','info');
-      }
-      lsSet('tt_sync_cfg',{apiKey:key,binId});
-      binIdInp.value=binId;
+      lsSet('tt_sync_cfg',{workerUrl});
       const pulled=await syncPull();
       if(pulled){
         setStatus('✅ Đã tải '+( S.tasks||[]).length+' task, '+(getPayments()||[]).length+' đề xuất!','ok');
         setTimeout(()=>setState({modal:null}),1500);
       } else {
-        setStatus('⚠ Kết nối được nhưng cloud chưa có data. Đã lưu cấu hình.','info');
-        setTimeout(()=>setState({modal:null}),2000);
+        setStatus('✅ Đã kết nối. Sẵn sàng đồng bộ.','ok');
+        setTimeout(()=>setState({modal:null}),1500);
       }
     }catch(e){
       setStatus('❌ Lỗi: '+e.message,'error');
@@ -2766,27 +2758,17 @@ function renderWelcomeModal(){
       btn({className:'modal-close',onClick:()=>setState({modal:null})},['×']),
     ]),
     div({style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:'var(--r8)',padding:'12px 14px',marginBottom:14,fontSize:13,color:'#1e40af',lineHeight:1.6}},[
-      div({style:{fontWeight:700,marginBottom:4}},['☁ Đồng bộ từ thiết bị cũ']),
-      div({},[' Nhập API Key + Bin ID để tải dữ liệu về thiết bị này. Tìm thấy trong Settings → Cloud Sync trên thiết bị cũ.']),
+      div({style:{fontWeight:700,marginBottom:4}},['☁ Đồng bộ qua Cloudflare Worker']),
+      div({},[' URL Worker đã được điền sẵn. Bấm Kết nối để đồng bộ.']),
     ]),
     div({className:'field'},[
-      el('label',{},['API KEY (JSONBin.io) *']),
-      apiKeyInp,
-    ]),
-    div({className:'field'},[
-      el('label',{},['BIN ID (để trống nếu muốn tạo mới)']),
-      binIdInp,
+      el('label',{},[' Worker URL']),
+      workerInp,
     ]),
     statusDiv,
     div({style:{display:'flex',gap:8,marginTop:16}},[
       btn({className:'btn btn-secondary',onClick:()=>setState({modal:null})},['Bỏ qua']),
       syncBtn,
-    ]),
-    div({style:{marginTop:14,padding:'10px 14px',background:'var(--bg)',borderRadius:'var(--r8)',border:'1px solid var(--border)',fontSize:12,color:'var(--text3)',lineHeight:1.7}},[
-      div({style:{fontWeight:600,color:'var(--text2)',marginBottom:4}},['📋 Cách lấy API Key + Bin ID:']),
-      div({},[' 1. Vào jsonbin.io → đăng nhập']),
-      div({},[' 2. Vào Settings → API Keys → copy Master Key']),
-      div({},[' 3. Bin ID: vào Settings → Cloud Sync trên thiết bị cũ để xem']),
     ]),
   ]);
   showModal(modalEl);
