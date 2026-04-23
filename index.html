@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+,role:null};<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8"/>
@@ -1471,6 +1471,15 @@ async function init(){
   if(_t!==null)lsSet('tt_tasks',_t);
   if(_c!==null)lsSet('tt_categories',_c);
   setState({tasks,categories:cats,loading:false});
+  // Kiểm tra đăng nhập
+  const savedRole=lsGet('tt_role');
+  const savedRoleExp=lsGet('tt_role_exp')||0;
+  if(savedRole&&Date.now()<savedRoleExp){
+    S.role=savedRole;
+  } else {
+    lsSet('tt_role',null);
+    setTimeout(()=>setState({modal:'login'}),100);
+  }
   // Auto-pull khi mở app (chỉ lần đầu, _pendingPush chắc chắn false lúc này)
   const cfg=getSyncCfg();
   if(cfg&&cfg.apiKey&&cfg.binId){
@@ -2188,7 +2197,7 @@ function render(){
         ]),
         !mobile?div({style:{display:'flex',gap:2,marginLeft:8,background:'var(--bg)',borderRadius:'var(--r8)',padding:3,border:'1px solid var(--border)'}},[
           btn({style:{padding:'5px 12px',borderRadius:6,border:'none',fontSize:12,fontWeight:600,background:S.activeView==='tasks'?'white':'transparent',color:S.activeView==='tasks'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='tasks'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'tasks'})},['📋 Tasks']),
-          btn({style:{padding:'5px 12px',borderRadius:6,border:'none',fontSize:12,fontWeight:600,background:S.activeView==='payments'?'white':'transparent',color:S.activeView==='payments'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='payments'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'payments'})},['💳 Thanh toán']),
+          S.role==='manager'?btn({style:{padding:'5px 12px',borderRadius:6,border:'none',fontSize:12,fontWeight:600,background:S.activeView==='payments'?'white':'transparent',color:S.activeView==='payments'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='payments'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'payments'})},['💳 Thanh toán']):null,
         ]):null,
       ]),
       div({style:{display:'flex',alignItems:'center',gap:8,flexShrink:0}},[
@@ -2321,6 +2330,7 @@ function render(){
   if(S.modal==='reminder')renderReminderModal();
   if(S.modal==='payEdit')renderPaymentModal();
   if(S.modal==='payTgCfg')renderPayTgCfgModal();
+  if(S.modal==='login'){renderLoginModal();return;}
   if(S.modal==='welcome')renderWelcomeModal();
 
   // ── Toast ──
@@ -3088,6 +3098,49 @@ function showPhotoLightbox(urls, startIdx=0){
   overlay.addEventListener('click',(e)=>{if(e.target===overlay)overlay.remove();});
   document.body.appendChild(overlay);
   update();
+}
+
+
+function renderLoginModal(){
+  const [pass, setPass] = [()=>'', null];
+  let inputVal='';
+  let errMsg='';
+
+  function tryLogin(){
+    if(inputVal===LOGIN_PASSWORDS.manager){
+      S.role='manager';
+      lsSet('tt_role','manager');
+      lsSet('tt_role_exp',Date.now()+LOGIN_SESSION_HOURS*3600*1000);
+      setState({modal:null,activeView:'tasks'});
+      showToast('👋 Xin chào Quản lý!');
+    } else if(inputVal===LOGIN_PASSWORDS.staff){
+      S.role='staff';
+      lsSet('tt_role','staff');
+      lsSet('tt_role_exp',Date.now()+LOGIN_SESSION_HOURS*3600*1000);
+      setState({modal:null,activeView:'tasks'});
+      showToast('👋 Xin chào!');
+    } else {
+      errMsg='❌ Mật khẩu không đúng';
+      render();
+    }
+  }
+
+  const inp=el('input',{type:'password',placeholder:'Nhập mật khẩu...',style:{width:'100%',padding:'10px 14px',borderRadius:'var(--r8)',border:'1.5px solid var(--border2)',fontSize:15,outline:'none',boxSizing:'border-box'}});
+  inp.value=inputVal;
+  inp.addEventListener('input',e=>{inputVal=e.target.value;errMsg='';});
+  inp.addEventListener('keydown',e=>{if(e.key==='Enter')tryLogin();});
+
+  const modalEl=div({className:'modal',style:{maxWidth:360,textAlign:'center'}},[
+    div({style:{fontSize:40,marginBottom:8}},['🔐']),
+    div({style:{fontSize:20,fontWeight:800,marginBottom:4,color:'var(--text1)'}},[' Task Tracker']),
+    div({style:{fontSize:13,color:'var(--text3)',marginBottom:20}},['Nhập mật khẩu để đăng nhập']),
+    div({style:{marginBottom:12}},[inp]),
+    errMsg?div({style:{color:'#DC2626',fontSize:13,marginBottom:10}},[errMsg]):null,
+    btn({className:'btn btn-primary',style:{width:'100%',padding:'11px'},onClick:tryLogin},['Đăng nhập']),
+  ].filter(Boolean));
+
+  setTimeout(()=>inp.focus(),100);
+  showModal(modalEl, false); // false = không cho đóng bằng click ngoài
 }
 
 function renderPaymentsView(mobile){
