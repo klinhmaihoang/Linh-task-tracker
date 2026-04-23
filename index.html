@@ -1511,7 +1511,6 @@ async function pollOneBot(token,chatId){
   const _ok=token+'|'+chatId;
   const offset=getOffset(_ok);
   const updates=await tgCall(token,'getUpdates?offset='+offset+'&timeout=0&limit=10').catch(e=>{
-    // 409 = conflict (multiple polling instances) — give up leader role
     if(e.message&&(e.message.includes('409')||e.message.toLowerCase().includes('conflict'))){
       amLeader=false;lsSet('tt_poll_lock',null);
     }
@@ -1950,7 +1949,6 @@ function startBotPolling(){
   function claimLeader(){
     const now=Date.now();
     const lock=lsGet('tt_poll_lock');
-    // Tăng TTL lên 6s để tránh race condition giữa các tab
     if(lock&&lock.id!==tabId&&(now-lock.ts)<6000){amLeader=false;return false;}
     amLeader=true;
     lsSet('tt_poll_lock',{id:tabId,ts:now});
@@ -1978,7 +1976,7 @@ function startBotPolling(){
     }finally{isPolling=false;}
   }
 
-  // Poll every 3 seconds — giảm từ 1.5s để tránh lỗi 409 khi nhiều tab
+  // Poll every 3 seconds — tránh lỗi 409 khi nhiều tab
   setTimeout(()=>claimLeader(),Math.random()*500);
   setInterval(doPoll,3000);
 
@@ -2848,34 +2846,23 @@ function renderSyncModal(){
     hasConfig?div({style:{background:'#ECFDF5',border:'1px solid #A7F3D0',borderRadius:'var(--r8)',padding:'10px 14px',marginBottom:12,fontSize:12,color:'#065f46',display:'flex',alignItems:'center',gap:8}},[
       span({},[S.syncStatus==='syncing'?'⟳':S.syncStatus==='error'?'⚠':'✅']),
       div({style:{flex:1}},[
-        div({style:{fontWeight:700}},['Đang kết nối JSONBin.io']),
+        div({style:{fontWeight:700}},['Đang kết nối Cloudflare Worker']),
         div({style:{marginTop:2,opacity:.8}},[lastSyncText]),
       ]),
     ]):null,
 
     // Instructions
     div({style:{background:'var(--bg)',borderRadius:'var(--r8)',padding:'12px 14px',marginBottom:12,border:'1px solid var(--border)'}},[
-      div({style:{fontSize:12,fontWeight:700,color:'var(--text1)',marginBottom:8}},['📋 Hướng dẫn setup (2 phút):']),
-              el('ol',{style:{fontSize:12,color:'var(--text2)',lineHeight:2,paddingLeft:16}},[
-          el('li',{},[' Vào ',el('a',{href:'https://jsonbin.io',target:'_blank',style:{color:'var(--accent)',fontWeight:600}},['jsonbin.io']),' → Sign Up miễn phí']),
-          el('li',{},[' Vào mục ',el('b',{},['API Keys']),' → copy ',el('b',{},['Master Key'])]),
-          el('li',{},[' Dán vào ô bên dưới → nhấn ',el('b',{},['Kết nối & Đồng bộ'])]),
-          el('li',{},[' Mọi thiết bị dùng chung ',el('b',{},['cùng 1 API Key']),' là tự động sync ✓']),
-        ]),
+      div({style:{fontSize:12,fontWeight:700,color:'var(--text1)',marginBottom:8}},['📋 Hướng dẫn:']),
+      el('ol',{style:{fontSize:12,color:'var(--text2)',lineHeight:2,paddingLeft:16}},[
+        el('li',{},[' Nhập ',el('b',{},['Worker URL']),' vào ô bên dưới']),
+        el('li',{},[' Nhấn ',el('b',{},['Kết nối & Đồng bộ'])]),
+        el('li',{},[' Mọi thiết bị dùng chung ',el('b',{},['cùng 1 Worker URL']),' là tự động sync ✓']),
+      ]),
     ]),
 
-    // Show Bin ID prominently when connected so user can copy to other devices
-    hasConfig&&cfg.binId?div({style:{background:'#FFF9C4',border:'1px solid #F9A825',borderRadius:'var(--r8)',padding:'10px 14px',marginBottom:12,fontSize:12}},[ 
-      div({style:{fontWeight:700,color:'#6D4C41',marginBottom:6}},['📱 Dùng trên thiết bị khác — copy thông tin này:']),
-      div({style:{display:'flex',gap:6,alignItems:'center',marginBottom:4}},[
-        div({style:{fontSize:11,color:'#795548',width:56,flexShrink:0}},['Bin ID:']),
-        div({style:{fontFamily:'monospace',fontSize:12,fontWeight:700,color:'#1a1a1a',background:'white',border:'1px solid #ddd',borderRadius:4,padding:'3px 8px',flex:1,userSelect:'all',cursor:'text'}},[ cfg.binId]),
-        btn({style:{fontSize:11,padding:'4px 8px',borderRadius:4,border:'1px solid #ddd',background:'white',cursor:'pointer'},onClick:()=>{navigator.clipboard.writeText(cfg.binId).then(()=>showToast('✅ Đã copy Bin ID!'));}},['Copy']),
-      ]),
-      div({style:{fontSize:11,color:'#795548'}},['Thiết bị mới: mở Settings → Cloud Sync (hoặc tự hiện khi mở lần đầu) → nhập API Key + Bin ID này']),
-    ]):null,
-    makeField('Master Key (từ jsonbin.io)',[apiKeyInp]),
-    makeField('Bin ID (dán vào nếu đã có từ thiết bị khác)',[binIdInp]),
+
+    makeField('Worker URL',[workerUrlInp]),
     statusDiv,
 
     div({style:{display:'flex',gap:8,paddingTop:'1rem',borderTop:'1px solid var(--border)',flexWrap:'wrap'}},[
