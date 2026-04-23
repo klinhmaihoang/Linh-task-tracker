@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>Task Tracker AI v10.13</title>
+<title>Task Tracker AI</title>
 <style>
 :root{
   --bg:#F4F5F7;--surface:#FFFFFF;--surface2:#F9FAFB;
@@ -661,6 +661,7 @@ async function pollPaymentBot(){
     const updates=await tgCall(cfg.token,'getUpdates?offset='+offset+'&timeout=0&limit=10');
     for(const u of updates){
       // Always advance offset to avoid reprocessing
+      if(!claimUpdate(u.update_id))continue;
       lsSet(offsetKey,u.update_id+1);
 
       // Only process payment-related updates; skip task tracker callbacks
@@ -1406,6 +1407,24 @@ const _sentNotifs=new Set();
 const _notifBC=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('tt_notif'):{postMessage:()=>{},addEventListener:()=>{}};
 _notifBC.addEventListener('message',e=>{if(e.data&&e.data.key)_sentNotifs.add(e.data.key);});
 
+// ── Update dedup: mỗi update_id chỉ được xử lý bởi 1 tab duy nhất ────────
+const _processedUpdates=new Set(); // in-memory cho tab này
+const _updBC=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('tt_upd'):{postMessage:()=>{},addEventListener:()=>{}};
+_updBC.addEventListener('message',e=>{if(e.data&&e.data.uid)_processedUpdates.add(e.data.uid);});
+function claimUpdate(updateId){
+  const key='tt_upd_'+updateId;
+  // Đã xử lý trong tab này
+  if(_processedUpdates.has(updateId))return false;
+  // Đã xử lý bởi tab khác (localStorage)
+  const ts=lsGet(key);
+  if(ts&&Date.now()-ts<30000)return false;
+  // Claim: ghi ngay trước khi làm bất cứ điều gì async
+  _processedUpdates.add(updateId);
+  lsSet(key,Date.now());
+  _updBC.postMessage({uid:updateId});
+  return true;
+}
+
 async function notifyTask(task,cat,msgPrefix){
   const tg=getCatTg(cat);
   if(!tg)return;
@@ -1455,6 +1474,12 @@ async function init(){
         const val=lsGet(key);
         if(val&&(now-val)>7200000)toRemove.push(key);
       }
+    }
+    toRemove.forEach(k=>localStorage.removeItem(k));
+    // Dọn update dedup keys cũ (>30s)
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k&&k.startsWith('tt_upd_')){const v=lsGet(k);if(v&&Date.now()-v>30000)toRemove.push(k);}
     }
     toRemove.forEach(k=>localStorage.removeItem(k));
   }catch{}
@@ -1517,6 +1542,8 @@ async function pollOneBot(token,chatId){
     throw e;
   });
   for(const u of updates){
+    // Dedup: bỏ qua nếu tab khác đã xử lý update này
+    if(!claimUpdate(u.update_id))continue;
     setOffset(_ok,u.update_id+1);
     const msg=u.message;
     // Cache TT_FID messages immediately when seen during polling
@@ -2853,15 +2880,14 @@ function renderSyncModal(){
 
     // Instructions
     div({style:{background:'var(--bg)',borderRadius:'var(--r8)',padding:'12px 14px',marginBottom:12,border:'1px solid var(--border)'}},[
-      div({style:{fontSize:12,fontWeight:700,color:'var(--text1)',marginBottom:8}},['📋 Hướng dẫn:']),
-      el('ol',{style:{fontSize:12,color:'var(--text2)',lineHeight:2,paddingLeft:16}},[
-        el('li',{},[' Nhập ',el('b',{},['Worker URL']),' vào ô bên dưới']),
-        el('li',{},[' Nhấn ',el('b',{},['Kết nối & Đồng bộ'])]),
-        el('li',{},[' Mọi thiết bị dùng chung ',el('b',{},['cùng 1 Worker URL']),' là tự động sync ✓']),
-      ]),
+      div({style:{fontSize:12,fontWeight:700,color:'var(--text1)',marginBottom:8}},['📋 Hướng dẫn setup (2 phút):']),
+              el('ol',{style:{fontSize:12,color:'var(--text2)',lineHeight:2,paddingLeft:16}},[
+          el('li',{},[' Vào ',el('a',{href:'https://jsonbin.io',target:'_blank',style:{color:'var(--accent)',fontWeight:600}},['jsonbin.io']),' → Sign Up miễn phí']),
+          el('li',{},[' Vào mục ',el('b',{},['API Keys']),' → copy ',el('b',{},['Master Key'])]),
+          el('li',{},[' Dán vào ô bên dưới → nhấn ',el('b',{},['Kết nối & Đồng bộ'])]),
+          el('li',{},[' Mọi thiết bị dùng chung ',el('b',{},['cùng 1 API Key']),' là tự động sync ✓']),
+        ]),
     ]),
-
-
     makeField('Worker URL',[workerUrlInp]),
     statusDiv,
 
