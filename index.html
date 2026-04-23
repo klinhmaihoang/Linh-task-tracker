@@ -131,6 +131,8 @@ select.input{
 <div id="app"></div>
 
 <script>
+const LOGIN_PASSWORDS={staff:'nhanvien123',manager:'quanly123'};
+const LOGIN_SESSION_HOURS=8;
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function lsGet(k){try{const v=localStorage.getItem(k);if(!v)return null;const p=JSON.parse(v);return p;}catch{localStorage.removeItem(k);return null;}}
 function lsSet(k,v){
