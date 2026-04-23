@@ -1969,8 +1969,8 @@ function startBotPolling(){
       for(const tg of configs){
         try{await pollOneBot(tg.token,tg.chatId);}catch{}
       }
-      // Also poll payment bot (separate bot/chat)
-      await pollPaymentBot().catch(()=>{});
+      // Payment bot handled by Cloudflare Worker webhook — skip polling here
+      // await pollPaymentBot().catch(()=>{});
     }finally{isPolling=false;}
   }
 
