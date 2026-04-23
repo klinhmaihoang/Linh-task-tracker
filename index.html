@@ -2519,11 +2519,11 @@ async function handleSaveTask(form,isNew){
     const t={...form,id:Date.now(),date:d};
     saveTasks([...S.tasks,t]);
     showToast('✅ Đã tạo công việc mới!');
-    if(!catProtected)notifyTask(t,cat,'📌 <b>Task mới được tạo</b>');
+    notifyTask(t,cat,'📌 <b>Task mới được tạo</b>');
   }else{
     saveTasks(S.tasks.map(t=>t.id===form.id?{...form}:t));
     showToast('✅ Đã cập nhật!');
-    if(!catProtected)notifyTask(form,cat,'✏️ <b>Task được cập nhật</b>');
+    notifyTask(form,cat,'✏️ <b>Task được cập nhật</b>');
   }
   setState({modal:null,modalData:null});
 }
