@@ -2830,24 +2830,48 @@ function renderSyncModal(){
 
   const connectBtn=btn({className:'btn btn-primary',style:{flex:1},onClick:async()=>{
     const workerUrl=workerUrlInp.value.trim().replace(/\/$/,'');
-    if(!workerUrl){setStatus('❌ Nhập Worker URL trước!','error');return;}
-    connectBtn.textContent='⟳ Đang kết nối...';connectBtn.disabled=true;
+    if(!workerUrl){setStatus('\u274C Nhập Worker URL trước!','error');return;}
+    connectBtn.textContent='Đang kết nối...';connectBtn.disabled=true;
     try{
-      setStatus('⟳ Đang kiểm tra kết nối...','info');
+      setStatus('Đang kiểm tra kết nối...','info');
       const testRes=await fetch(workerUrl);
       if(!testRes.ok)throw new Error('Worker không phản hồi');
-      const newCfg={workerUrl};
-      lsSet('tt_sync_cfg',newCfg);
-      const pulled=await syncPull();
-      if(pulled){
-        setStatus('✅ Kết nối thành công! '+(S.tasks||[]).length+' task đã đồng bộ.','ok');
+      lsSet('tt_sync_cfg',{workerUrl});
+      const cloudRes=await fetch(workerUrl+'/data');
+      const cloudData=await cloudRes.json();
+      const cloudCount=(cloudData.tasks||[]).length;
+      const localCount=(S.tasks||[]).length;
+      connectBtn.textContent='Đã kết nối';
+      if(cloudCount>0&&localCount>0){
+        // Cả hai có data — hỏi user
+        statusDiv.innerHTML='';
+        statusDiv.style.display='block';
+        Object.assign(statusDiv.style,{background:'#EFF6FF',color:'#1e40af',border:'1px solid #BFDBFE'});
+        const info=document.createElement('div');
+        info.style.cssText='font-size:12px;font-weight:600;margin-bottom:8px';
+        info.textContent='Cloud co '+cloudCount+' task | Thiet bi nay co '+localCount+' task. Dung data nao?';
+        const row=document.createElement('div');
+        row.style.cssText='display:flex;gap:6px;margin-top:6px';
+        const bCloud=document.createElement('button');
+        bCloud.className='btn btn-secondary';bCloud.style.flex='1';bCloud.style.fontSize='12px';
+        bCloud.textContent='Lay tu cloud ('+cloudCount+')';
+        bCloud.onclick=async()=>{bCloud.disabled=true;bLocal.disabled=true;setStatus('Dang lay tu cloud...','info');await syncPull();setStatus('Da lay '+( S.tasks||[]).length+' task tu cloud.','ok');};
+        const bLocal=document.createElement('button');
+        bLocal.className='btn btn-primary';bLocal.style.flex='1';bLocal.style.fontSize='12px';
+        bLocal.textContent='Day len cloud ('+localCount+')';
+        bLocal.onclick=async()=>{bCloud.disabled=true;bLocal.disabled=true;setStatus('Dang day len cloud...','info');await syncPush();setStatus('Da day '+localCount+' task len cloud.','ok');};
+        row.appendChild(bCloud);row.appendChild(bLocal);
+        statusDiv.appendChild(info);statusDiv.appendChild(row);
+      } else if(localCount>0&&cloudCount===0){
+        await syncPush();
+        setStatus('Da day '+localCount+' task len cloud.','ok');
       } else {
-        setStatus('✅ Đã kết nối Worker. Sẵn sàng đồng bộ.','ok');
+        await syncPull();
+        setStatus('Da lay '+( S.tasks||[]).length+' task tu cloud.','ok');
       }
-      connectBtn.textContent='✓ Đã kết nối';
     }catch(e){
-      setStatus('❌ Lỗi: '+e.message,'error');
-      connectBtn.textContent='Kết nối';connectBtn.disabled=false;
+      setStatus('Loi: '+e.message,'error');
+      connectBtn.textContent='Ket noi';connectBtn.disabled=false;
     }
   }},['Kết nối & Đồng bộ']);
 
