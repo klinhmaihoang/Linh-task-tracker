@@ -1297,14 +1297,14 @@ async function syncPullIfNewer(){
     if(cloudSavedAt<=lastPull+1000)return;
     console.log('[sync] cloud newer → pulling all data...');
 
-    // Tasks & categories
-    if(Array.isArray(data.tasks)&&Array.isArray(data.categories)){
+    // Tasks & categories — chỉ update nếu cloud có data
+    if(Array.isArray(data.tasks)&&data.tasks.length>0&&Array.isArray(data.categories)){
       S.tasks=data.tasks;
       S.categories=data.categories;
       lsSet('tt_tasks',data.tasks);
       lsSet('tt_categories',data.categories);
     }
-    // Payments — merge thay vì ghi đè thẳng để không mất bản local mới hơn
+    // Payments — luôn merge kể cả khi cloud không có tasks
     if(Array.isArray(data.payments)){
       const localPayments=getPayments();
       const merged=data.payments.map(cp=>{
@@ -1320,8 +1320,14 @@ async function syncPullIfNewer(){
     if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
     if(data.payTgCfg&&data.payTgCfg.token)lsSet('tt_pay_tg_cfg',data.payTgCfg);
     lsSet('tt_sync_lastpull',cloudSavedAt);
-    setState({syncStatus:'ok',syncMsg:'↓ Đồng bộ '+new Date().toLocaleTimeString('vi-VN')});
-    console.log('[sync] all data updated — tasks:'+(S.tasks||[]).length);
+    // ✅ FIX: render lại UI sau khi pull để phản ánh data mới
+    setState({
+      tasks:S.tasks,
+      categories:S.categories,
+      syncStatus:'ok',
+      syncMsg:'↓ Đồng bộ '+new Date().toLocaleTimeString('vi-VN')
+    });
+    console.log('[sync] all data updated — tasks:'+(S.tasks||[]).length+' payments:'+lsGet('tt_payments')?.length);
   }catch(e){
     // Silently ignore — không spam error cho background pull
   }
