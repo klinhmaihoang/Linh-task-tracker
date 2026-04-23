@@ -1209,9 +1209,9 @@ let _syncTimer=null;
 let _pendingPush=false; // true khi có thay đổi local chưa push lên cloud
 
 function scheduleSyncPush(){
-  _pendingPush=true; // đánh dấu có data local chưa sync
+  _pendingPush=true;
   if(_syncTimer)clearTimeout(_syncTimer);
-  _syncTimer=setTimeout(syncPush,1500);
+  _syncTimer=setTimeout(()=>{_syncTimer=null;syncPush();},1500);
 }
 
 async function syncPush(){
@@ -1279,45 +1279,50 @@ async function syncPull(){
   }
 }
 
-// Auto-pull payments: chỉ pull payments từ cloud, không ghi đè tasks/categories
+// Auto-pull toàn bộ data khi cloud mới hơn local
 async function syncPullIfNewer(){
   const cfg=getSyncCfg();
   if(!cfg||!cfg.workerUrl)return;
+  // Block nếu đang có data local chưa push (tránh ghi đè)
   if(_pendingPush||_syncTimer)return;
   try{
-    if(!cfg.workerUrl)return;
     const res=await fetch(cfg.workerUrl+'/data');
     if(!res.ok)return;
     const data=await res.json();
     if(!data)return;
     const cloudSavedAt=data.savedAt?new Date(data.savedAt).getTime():0;
     const localLastPush=lsGet('tt_sync_lastpush')||0;
-    // Nếu cloud mới hơn local > 3s → pull payments
-    if(cloudSavedAt>localLastPush+3000){
-      console.log('[sync] cloud newer → pulling payments...');
-      // Chỉ update payments — không đụng tasks/categories
-      if(Array.isArray(data.payments)){
-        const localPayments=getPayments();
-        // Merge: ưu tiên bản nào có lastActionAt mới hơn
-        const merged=data.payments.map(cp=>{
-          const lp=localPayments.find(p=>p.id===cp.id);
-          if(!lp)return cp;
-          const cloudTime=new Date(cp.lastActionAt||cp.createdAt||0).getTime();
-          const localTime=new Date(lp.lastActionAt||lp.createdAt||0).getTime();
-          return cloudTime>=localTime?cp:lp;
-        });
-        // Thêm các đề xuất chỉ có local (chưa sync lên)
-        localPayments.forEach(lp=>{
-          if(!merged.find(p=>p.id===lp.id))merged.push(lp);
-        });
-        lsSet('tt_payments',merged);
-        lsSet('tt_sync_lastpush',cloudSavedAt);
-        render();
-        console.log('[sync] payments updated:',merged.length);
-      }
+    // Chỉ pull khi cloud thực sự mới hơn local
+    if(cloudSavedAt<=localLastPush+3000)return;
+    console.log('[sync] cloud newer → pulling all data...');
+
+    // Tasks & categories
+    if(Array.isArray(data.tasks)&&Array.isArray(data.categories)){
+      S.tasks=data.tasks;
+      S.categories=data.categories;
+      lsSet('tt_tasks',data.tasks);
+      lsSet('tt_categories',data.categories);
     }
+    // Payments — merge thay vì ghi đè thẳng để không mất bản local mới hơn
+    if(Array.isArray(data.payments)){
+      const localPayments=getPayments();
+      const merged=data.payments.map(cp=>{
+        const lp=localPayments.find(p=>p.id===cp.id);
+        if(!lp)return cp;
+        const cloudTime=new Date(cp.lastActionAt||cp.createdAt||0).getTime();
+        const localTime=new Date(lp.lastActionAt||lp.createdAt||0).getTime();
+        return cloudTime>=localTime?cp:lp;
+      });
+      localPayments.forEach(lp=>{if(!merged.find(p=>p.id===lp.id))merged.push(lp);});
+      lsSet('tt_payments',merged);
+    }
+    if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
+    if(data.payTgCfg&&data.payTgCfg.token)lsSet('tt_pay_tg_cfg',data.payTgCfg);
+    lsSet('tt_sync_lastpush',cloudSavedAt);
+    setState({syncStatus:'ok',syncMsg:'↓ Đồng bộ '+new Date().toLocaleTimeString('vi-VN')});
+    console.log('[sync] all data updated — tasks:'+(S.tasks||[]).length);
   }catch(e){
-    // Silently ignore
+    // Silently ignore — không spam error cho background pull
   }
 }
 
@@ -1508,7 +1513,7 @@ async function init(){
   startBotPolling();
   startDeadlineReminder();
   // Auto-pull thông minh mỗi 20s — chỉ pull khi cloud mới hơn local
-  setInterval(()=>{ syncPullIfNewer().catch(()=>{}); }, 20000);
+  setInterval(()=>{ syncPullIfNewer().catch(()=>{}); }, 8000);
   // Poll Sepay API mỗi 30s
   setInterval(()=>{ pollSepayAPI().catch(()=>{}); }, 30000);
 }
