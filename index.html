@@ -1215,7 +1215,7 @@ function scheduleSyncPush(){
 
 async function syncPush(){
   const cfg=getSyncCfg();
-  if(!cfg||!cfg.apiKey||!cfg.binId)return;
+  if(!cfg||!cfg.workerUrl)return;
   setState({syncStatus:'syncing'},false);render();
   try{
     const data={
@@ -1226,9 +1226,9 @@ async function syncPush(){
       payTgCfg:getPayTgCfg(),
       savedAt:new Date().toISOString()
     };
-    const res=await fetch('https://api.jsonbin.io/v3/b/'+cfg.binId,{
+    const res=await fetch(cfg.workerUrl+'/data',{
       method:'PUT',
-      headers:{'Content-Type':'application/json','X-Master-Key':cfg.apiKey,'X-Bin-Versioning':'false'},
+      headers:{'Content-Type':'application/json'},
       body:JSON.stringify(data)
     });
     if(!res.ok)throw new Error('HTTP '+res.status);
@@ -1242,7 +1242,7 @@ async function syncPush(){
 
 async function syncPull(){
   const cfg=getSyncCfg();
-  if(!cfg||!cfg.apiKey||!cfg.binId)return false;
+  if(!cfg||!cfg.workerUrl)return false;
   // KHÔNG pull nếu đang có data local chưa push
   if(_pendingPush||_syncTimer){
     console.log('[sync] skip pull — pending push');
@@ -1251,12 +1251,9 @@ async function syncPull(){
   }
   setState({syncStatus:'syncing'},false);render();
   try{
-    const res=await fetch('https://api.jsonbin.io/v3/b/'+cfg.binId+'/latest',{
-      headers:{'X-Master-Key':cfg.apiKey}
-    });
+    const res=await fetch(cfg.workerUrl+'/data');
     if(!res.ok)throw new Error('HTTP '+res.status);
-    const json=await res.json();
-    const data=json.record;
+    const data=await res.json();
     if(!data){throw new Error('Không có dữ liệu cloud');}
     // Nếu không có tasks/categories thì chỉ update payments
     if(!Array.isArray(data.tasks)||!Array.isArray(data.categories)){
@@ -1284,15 +1281,13 @@ async function syncPull(){
 // Auto-pull payments: chỉ pull payments từ cloud, không ghi đè tasks/categories
 async function syncPullIfNewer(){
   const cfg=getSyncCfg();
-  if(!cfg||!cfg.apiKey||!cfg.binId)return;
+  if(!cfg||!cfg.workerUrl)return;
   if(_pendingPush||_syncTimer)return;
   try{
-    const res=await fetch('https://api.jsonbin.io/v3/b/'+cfg.binId+'/latest',{
-      headers:{'X-Master-Key':cfg.apiKey}
-    });
+    if(!cfg.workerUrl)return;
+    const res=await fetch(cfg.workerUrl+'/data');
     if(!res.ok)return;
-    const json=await res.json();
-    const data=json.record;
+    const data=await res.json();
     if(!data)return;
     const cloudSavedAt=data.savedAt?new Date(data.savedAt).getTime():0;
     const localLastPush=lsGet('tt_sync_lastpush')||0;
@@ -2798,11 +2793,11 @@ function renderWelcomeModal(){
 }
 
 function renderSyncModal(){
-  const cfg=getSyncCfg()||{apiKey:'',binId:''};
-  const hasConfig=!!(cfg.apiKey&&cfg.binId);
+  const cfg=getSyncCfg()||{workerUrl:''};
+  const hasConfig=!!(cfg.workerUrl);
+  const WORKER_URL='https://sepay-webhook.klinh-maihoang.workers.dev';
 
-  const apiKeyInp=inp({className:'input',type:'password',value:cfg.apiKey||'',placeholder:'$2b$10$xxxxxxxx...',style:{fontFamily:'monospace',fontSize:12}});
-  const binIdInp=inp({className:'input',value:cfg.binId||'',placeholder:'Tự động tạo — hoặc dán Bin ID từ thiết bị khác',style:{fontFamily:'monospace',fontSize:12}});
+  const workerUrlInp=inp({className:'input',value:cfg.workerUrl||WORKER_URL,placeholder:'https://your-worker.workers.dev',style:{fontFamily:'monospace',fontSize:12}});
 
   const statusDiv=div({style:{fontSize:12,padding:'8px 12px',borderRadius:'var(--r8)',display:'none',marginTop:8,fontWeight:500}});
   function setStatus(msg,type){
@@ -2814,28 +2809,20 @@ function renderSyncModal(){
   }
 
   const connectBtn=btn({className:'btn btn-primary',style:{flex:1},onClick:async()=>{
-    const key=apiKeyInp.value.trim();
-    if(!key){setStatus('❌ Nhập API Key trước!','error');return;}
+    const workerUrl=workerUrlInp.value.trim().replace(/\/$/,'');
+    if(!workerUrl){setStatus('❌ Nhập Worker URL trước!','error');return;}
     connectBtn.textContent='⟳ Đang kết nối...';connectBtn.disabled=true;
     try{
-      let binId=binIdInp.value.trim()||cfg.binId||'';
-      // If user provided a Bin ID manually, use it; otherwise try to create
-      if(!binId){
-        setStatus('⟳ Đang tạo kho dữ liệu mới...','info');
-        binId=await syncCreateBin(key);
-        setStatus('✅ Đã tạo kho. Đang đồng bộ...','info');
-      } else {
-        setStatus('⟳ Đang tải dữ liệu từ cloud...','info');
-      }
-      const newCfg={apiKey:key,binId};
+      setStatus('⟳ Đang kiểm tra kết nối...','info');
+      const testRes=await fetch(workerUrl);
+      if(!testRes.ok)throw new Error('Worker không phản hồi');
+      const newCfg={workerUrl};
       lsSet('tt_sync_cfg',newCfg);
-      // Update S.syncCfg in-memory so syncPull picks it up
-      binIdInp.value=binId;
       const pulled=await syncPull();
       if(pulled){
         setStatus('✅ Kết nối thành công! '+(S.tasks||[]).length+' task đã đồng bộ.','ok');
       } else {
-        setStatus('⚠ Kết nối được nhưng chưa có dữ liệu trên cloud.','info');
+        setStatus('✅ Đã kết nối Worker. Sẵn sàng đồng bộ.','ok');
       }
       connectBtn.textContent='✓ Đã kết nối';
     }catch(e){
