@@ -2257,8 +2257,6 @@ function extendSession(){lsSet('tt_session_exp',Date.now()+8*60*60*1000);}
 
 // ─── User Management Modal ────────────────────────────────────────────────────
 function openUserManageModal(){
-  const users=getUsers();
-
   function renderList(){
     listEl.innerHTML='';
     const u=getUsers();
@@ -2267,20 +2265,35 @@ function openUserManageModal(){
       return;
     }
     u.forEach((user,i)=>{
+      const isSelf=S.currentUser&&S.currentUser.id===user.id;
       const row=div({style:{display:'flex',alignItems:'center',gap:10,padding:'8px 0',borderBottom:'1px solid var(--border)'}},[
         div({style:{width:32,height:32,borderRadius:'50%',background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontWeight:700,fontSize:13,flexShrink:0}},[user.name[0].toUpperCase()]),
         div({style:{flex:1}},[
-          div({style:{fontWeight:600,fontSize:13}},[user.name]),
+          div({style:{fontWeight:600,fontSize:13}},[user.name+(isSelf?' (bạn)':'')]),
           div({style:{fontSize:11,color:'var(--text3)'}},[user.role==='admin'?'👑 Admin':'👤 Thành viên']),
         ]),
-        btn({style:{fontSize:11,padding:'4px 8px',borderRadius:6,border:'1px solid #fecaca',background:'#fef2f2',color:'#ef4444',cursor:'pointer'},
+        // Reset PIN button
+        btn({style:{fontSize:11,padding:'4px 8px',borderRadius:6,border:'1px solid #bfdbfe',background:'#eff6ff',color:'#1d4ed8',cursor:'pointer',marginRight:4},
+          onClick:async()=>{
+            const newPin=prompt('Nhập PIN mới 4 số cho '+user.name+':');
+            if(!newPin||!/^\d{4}$/.test(newPin)){showToast('PIN phải là 4 chữ số!');return;}
+            const pinHash=await hashPin(newPin);
+            const updated=getUsers().map(u=>u.id===user.id?{...u,pinHash}:u);
+            saveUsers(updated);
+            // Nếu đang reset cho chính mình thì update session
+            if(isSelf){saveCurrentUser({...S.currentUser,pinHash});extendSession();}
+            showToast('✅ Đã đổi PIN cho '+user.name);
+            renderList();
+          }},['🔑 Đổi PIN']),
+        // Delete button (không xóa chính mình)
+        isSelf?null:btn({style:{fontSize:11,padding:'4px 8px',borderRadius:6,border:'1px solid #fecaca',background:'#fef2f2',color:'#ef4444',cursor:'pointer'},
           onClick:()=>{
             if(!confirm('Xóa tài khoản '+user.name+'?'))return;
-            const updated=getUsers().filter((_,j)=>j!==i);
+            const updated=getUsers().filter(u=>u.id!==user.id);
             saveUsers(updated);
             renderList();
           }},['Xóa']),
-      ]);
+      ].filter(Boolean));
       listEl.appendChild(row);
     });
   }
@@ -2329,7 +2342,6 @@ function openUserManageModal(){
 }
 
 
-// ─── First Run Setup ──────────────────────────────────────────────────────────
 function renderFirstRunSetup(){
   const app=document.getElementById('app');
   app.innerHTML='';
@@ -2378,6 +2390,16 @@ function showLoginScreen(users){
   let pinVal='';
   const errorEl=document.createElement('div');
   errorEl.style.cssText='color:#ef4444;font-size:13px;text-align:center;min-height:20px;margin-bottom:4px';
+  // Quên PIN link
+  const forgotPin=document.createElement('div');
+  forgotPin.style.cssText='text-align:center;margin-top:12px;font-size:12px;color:var(--text3)';
+  const forgotLink=document.createElement('button');
+  forgotLink.textContent='Quên PIN?';
+  forgotLink.style.cssText='background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px;text-decoration:underline';
+  forgotLink.onclick=()=>{
+    alert('Liên hệ Admin để được reset PIN.\n\nAdmin có thể vào: Header → 👥 → chọn tên → 🔑 Đổi PIN');
+  };
+  forgotPin.appendChild(forgotLink);
 
   function updateDots(){
     for(let i=0;i<4;i++){
@@ -2463,6 +2485,7 @@ function showLoginScreen(users){
   card.appendChild(dotsRow);
   card.appendChild(errorEl);
   card.appendChild(numpad);
+  card.appendChild(forgotPin);
   const wrap=document.createElement('div');
   wrap.style.cssText='min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:20px';
   wrap.appendChild(card);
