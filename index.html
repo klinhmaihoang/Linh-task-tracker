@@ -288,7 +288,13 @@ function getAllTgConfigs(cats){
 function saveTasks(nt){setState({tasks:nt});lsSet('tt_tasks',nt);scheduleSyncPush();}
 function saveCats(nc){setState({categories:nc});lsSet('tt_categories',nc);scheduleSyncPush();}
 function getPayments(){return lsGet('tt_payments')||[];}
-function savePayments(list){lsSet('tt_payments',list);scheduleSyncPush();render();}
+function savePayments(list){
+  lsSet('tt_payments',list);
+  // Lưu timestamp xóa để syncPullIfNewer không restore lại
+  lsSet('tt_payments_updated',Date.now());
+  scheduleSyncPush();
+  render();
+}
 function genPaymentCode(){return 'PT'+Date.now().toString(36).toUpperCase().slice(-6);}
 function getPayTgCfg(){return lsGet('tt_pay_tg_cfg')||{token:'',chatId:''};}
 function savePayTgCfg(cfg){lsSet('tt_pay_tg_cfg',cfg);}
@@ -1311,18 +1317,33 @@ async function syncPullIfNewer(){
       lsSet('tt_tasks',data.tasks);
       lsSet('tt_categories',data.categories);
     }
-    // Payments — luôn merge kể cả khi cloud không có tasks
+    // Payments — merge thông minh, không restore payment đã xóa local
     if(Array.isArray(data.payments)){
       const localPayments=getPayments();
-      const merged=data.payments.map(cp=>{
-        const lp=localPayments.find(p=>p.id===cp.id);
-        if(!lp)return cp;
-        const cloudTime=new Date(cp.lastActionAt||cp.createdAt||0).getTime();
-        const localTime=new Date(lp.lastActionAt||lp.createdAt||0).getTime();
-        return cloudTime>=localTime?cp:lp;
-      });
-      localPayments.forEach(lp=>{if(!merged.find(p=>p.id===lp.id))merged.push(lp);});
-      lsSet('tt_payments',merged);
+      const localUpdated=lsGet('tt_payments_updated')||0;
+      const cloudSavedAtMs=cloudSavedAt;
+      // Nếu local mới sửa payments gần đây hơn cloud → giữ local
+      if(localUpdated>cloudSavedAtMs-5000){
+        // Chỉ thêm payment mới từ cloud mà local chưa có
+        const merged=[...localPayments];
+        data.payments.forEach(cp=>{
+          if(!localPayments.find(p=>p.id===cp.id)){
+            merged.push(cp);
+          }
+        });
+        lsSet('tt_payments',merged);
+      } else {
+        // Cloud mới hơn → merge bình thường
+        const merged=data.payments.map(cp=>{
+          const lp=localPayments.find(p=>p.id===cp.id);
+          if(!lp)return cp;
+          const cloudTime=new Date(cp.lastActionAt||cp.createdAt||0).getTime();
+          const localTime=new Date(lp.lastActionAt||lp.createdAt||0).getTime();
+          return cloudTime>=localTime?cp:lp;
+        });
+        localPayments.forEach(lp=>{if(!merged.find(p=>p.id===lp.id))merged.push(lp);});
+        lsSet('tt_payments',merged);
+      }
     }
     if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
     if(data.payTgCfg&&data.payTgCfg.token)lsSet('tt_pay_tg_cfg',data.payTgCfg);
