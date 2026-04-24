@@ -243,6 +243,7 @@ const S={
   modalData:null,
   filter:'all',
   selectedCatId:null, // null = chọn cat đầu tiên sau khi load,
+  currentUser:null, // {id,name,role:'admin'|'member'}
   unlockedCats:new Set(),
   activeCol:'todo',
   sidebarOpen:false,
@@ -2154,6 +2155,8 @@ function renderCatPanel(onClose){
     span({style:{fontSize:10,fontWeight:700,color:'var(--text3)',textTransform:'uppercase',letterSpacing:'.08em'}},['Categories']),
     div({style:{display:'flex',gap:6}},[
       btn({style:{background:'#f3f4f6',border:'none',borderRadius:6,width:30,height:30,fontSize:14,color:'#6b7280',display:'flex',alignItems:'center',justifyContent:'center'},onClick:()=>openManageCats()},['⚙']),
+      S.currentUser?.role==='admin'?btn({style:{background:'#f3f4f6',border:'none',borderRadius:6,padding:'4px 8px',cursor:'pointer',fontSize:12,color:'var(--text2)'},onClick:()=>openUserManageModal()},['👥']):null,
+      btn({style:{background:'#f3f4f6',border:'none',borderRadius:6,padding:'4px 8px',cursor:'pointer',fontSize:11,color:'#ef4444'},onClick:()=>{if(confirm('Đăng xuất?')){clearCurrentUser();setState({currentUser:null});}}},['↩']),
       onClose?btn({style:{background:'#f3f4f6',border:'none',borderRadius:6,width:30,height:30,fontSize:18,color:'#6b7280',display:'flex',alignItems:'center',justifyContent:'center'},onClick:onClose},['×']):null,
     ]),
   ]);
@@ -2190,7 +2193,264 @@ function renderCatPanel(onClose){
 }
 
 // ─── Main render ──────────────────────────────────────────────────────────────
+
+// ─── Auth helpers ─────────────────────────────────────────────────────────────
+async function hashPin(pin){
+  const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('tt_pin_salt_'+pin));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function getUsers(){return lsGet('tt_users')||[];}
+function saveUsers(u){lsSet('tt_users',u);}
+function getCurrentUser(){return lsGet('tt_current_user');}
+function saveCurrentUser(u){lsSet('tt_current_user',u);}
+function clearCurrentUser(){localStorage.removeItem('tt_current_user');localStorage.removeItem('tt_session_exp');}
+function isSessionValid(){
+  const exp=lsGet('tt_session_exp');
+  if(!exp)return false;
+  return Date.now()<exp;
+}
+function extendSession(){lsSet('tt_session_exp',Date.now()+8*60*60*1000);}
+
+
+// ─── Login Screen ─────────────────────────────────────────────────────────────
+
+// ─── User Management Modal ────────────────────────────────────────────────────
+function openUserManageModal(){
+  const users=getUsers();
+
+  function renderList(){
+    listEl.innerHTML='';
+    const u=getUsers();
+    if(!u.length){
+      listEl.appendChild(div({style:{color:'var(--text3)',fontSize:13,textAlign:'center',padding:'16px 0'}},['Chưa có tài khoản nào']));
+      return;
+    }
+    u.forEach((user,i)=>{
+      const row=div({style:{display:'flex',alignItems:'center',gap:10,padding:'8px 0',borderBottom:'1px solid var(--border)'}},[
+        div({style:{width:32,height:32,borderRadius:'50%',background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontWeight:700,fontSize:13,flexShrink:0}},[user.name[0].toUpperCase()]),
+        div({style:{flex:1}},[
+          div({style:{fontWeight:600,fontSize:13}},[user.name]),
+          div({style:{fontSize:11,color:'var(--text3)'}},[user.role==='admin'?'👑 Admin':'👤 Thành viên']),
+        ]),
+        btn({style:{fontSize:11,padding:'4px 8px',borderRadius:6,border:'1px solid #fecaca',background:'#fef2f2',color:'#ef4444',cursor:'pointer'},
+          onClick:()=>{
+            if(!confirm('Xóa tài khoản '+user.name+'?'))return;
+            const updated=getUsers().filter((_,j)=>j!==i);
+            saveUsers(updated);
+            renderList();
+          }},['Xóa']),
+      ]);
+      listEl.appendChild(row);
+    });
+  }
+
+  const listEl=div({style:{marginBottom:16}},[]);
+  renderList();
+
+  // Add user form
+  const nameInp=inp({className:'input',placeholder:'Tên hiển thị',style:{marginBottom:8}});
+  const pinInp=inp({className:'input',placeholder:'PIN 4 số',type:'password',maxLength:4,style:{marginBottom:8}});
+  const roleSelect=el('select',{className:'input',style:{marginBottom:12}},[
+    el('option',{value:'member'},['👤 Thành viên']),
+    el('option',{value:'admin'},['👑 Admin']),
+  ]);
+  const addErr=div({style:{color:'#ef4444',fontSize:12,marginBottom:8,minHeight:16}},[]);
+
+  const addBtn=btn({className:'btn btn-primary',style:{width:'100%'},onClick:async()=>{
+    const name=nameInp.value.trim();
+    const pin=pinInp.value.trim();
+    const role=roleSelect.value;
+    if(!name){addErr.textContent='Nhập tên!';return;}
+    if(!/^\d{4}$/.test(pin)){addErr.textContent='PIN phải là 4 chữ số!';return;}
+    const existing=getUsers();
+    if(existing.find(u=>u.name.toLowerCase()===name.toLowerCase())){addErr.textContent='Tên đã tồn tại!';return;}
+    addBtn.disabled=true;addBtn.textContent='Đang tạo...';
+    const pinHash=await hashPin(pin);
+    const newUser={id:'u_'+Date.now(),name,role,pinHash};
+    saveUsers([...existing,newUser]);
+    nameInp.value='';pinInp.value='';addErr.textContent='';
+    addBtn.disabled=false;addBtn.textContent='+ Thêm';
+    renderList();
+  }},['+ Thêm']);
+
+  const modalEl=div({className:'modal',style:{maxWidth:420}},[
+    div({className:'modal-header'},[
+      div({className:'modal-title'},['👥 Quản lý tài khoản']),
+      btn({className:'modal-close',onClick:()=>setState({modal:null})},['×']),
+    ]),
+    listEl,
+    div({style:{borderTop:'1px solid var(--border)',paddingTop:16}},[
+      div({style:{fontWeight:600,fontSize:13,marginBottom:10,color:'var(--text1)'}},[' Thêm tài khoản mới']),
+      nameInp,pinInp,roleSelect,addErr,addBtn,
+    ]),
+  ]);
+  showModal(modalEl);
+}
+
+
+// ─── First Run Setup ──────────────────────────────────────────────────────────
+function renderFirstRunSetup(){
+  const app=document.getElementById('app');
+  app.innerHTML='';
+  const nameInp=inp({className:'input',placeholder:'Tên của bạn (Admin đầu tiên)',style:{marginBottom:12}});
+  const pinInp=inp({className:'input',placeholder:'Tạo PIN 4 số',type:'password',maxLength:4,style:{marginBottom:8}});
+  const pin2Inp=inp({className:'input',placeholder:'Nhập lại PIN',type:'password',maxLength:4,style:{marginBottom:12}});
+  const errEl=div({style:{color:'#ef4444',fontSize:13,marginBottom:8,minHeight:18}},[]);
+
+  const submitBtn=btn({className:'btn btn-primary',style:{width:'100%',padding:'12px'},onClick:async()=>{
+    const name=nameInp.value.trim();
+    const pin=pinInp.value.trim();
+    const pin2=pin2Inp.value.trim();
+    if(!name){errEl.textContent='Nhập tên!';return;}
+    if(!/^\d{4}$/.test(pin)){errEl.textContent='PIN phải là 4 chữ số!';return;}
+    if(pin!==pin2){errEl.textContent='PIN không khớp!';return;}
+    submitBtn.disabled=true;submitBtn.textContent='Đang tạo...';
+    const pinHash=await hashPin(pin);
+    const admin={id:'u_'+Date.now(),name,role:'admin',pinHash};
+    saveUsers([admin]);
+    saveCurrentUser(admin);
+    extendSession();
+    setState({currentUser:admin});
+  }},['Bắt đầu sử dụng →']);
+
+  app.appendChild(div({style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg)',padding:20}},[
+    div({style:{background:'white',borderRadius:'var(--r16)',padding:'32px 28px',boxShadow:'0 8px 32px rgba(0,0,0,.12)',width:'100%',maxWidth:360}},[
+      div({style:{textAlign:'center',marginBottom:24}},[
+        div({style:{width:56,height:56,borderRadius:16,background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 12px',color:'white',fontWeight:800,fontSize:22}},['TT']),
+        div({style:{fontWeight:700,fontSize:20,color:'var(--text1)'}},[' Thiết lập lần đầu']),
+        div({style:{fontSize:13,color:'var(--text3)',marginTop:4}},['Tạo tài khoản Admin đầu tiên']),
+      ]),
+      nameInp,pinInp,pin2Inp,errEl,submitBtn,
+    ])
+  ]));
+}
+
+function renderLoginScreen(){
+  const app=document.getElementById('app');
+  app.innerHTML='';
+  const users=getUsers();
+  let selectedUser=null;
+
+  const pinDots=()=>div({style:{display:'flex',gap:10,justifyContent:'center',margin:'16px 0'}},
+    Array.from({length:4},(_,i)=>div({id:'dot_'+i,style:{
+      width:14,height:14,borderRadius:'50%',
+      background:pinVal.length>i?'var(--accent)':'#e5e7eb',
+      transition:'background .1s'
+    }},[]))
+  );
+
+  let pinVal='';
+  const errorEl=div({style:{color:'#ef4444',fontSize:13,textAlign:'center',minHeight:20,marginBottom:4}},[]);
+
+  function updateDots(){
+    for(let i=0;i<4;i++){
+      const d=document.getElementById('dot_'+i);
+      if(d)d.style.background=pinVal.length>i?'var(--accent)':'#e5e7eb';
+    }
+  }
+
+  async function submitPin(){
+    if(!selectedUser){errorEl.textContent='Chọn tên trước!';return;}
+    if(pinVal.length<4){errorEl.textContent='Nhập đủ 4 số!';return;}
+    const hashed=await hashPin(pinVal);
+    if(hashed!==selectedUser.pinHash){
+      errorEl.textContent='PIN không đúng!';
+      pinVal='';updateDots();
+      return;
+    }
+    saveCurrentUser(selectedUser);
+    extendSession();
+    setState({currentUser:selectedUser});
+  }
+
+  function pressKey(k){
+    if(k==='del'){pinVal=pinVal.slice(0,-1);}
+    else if(pinVal.length<4){pinVal+=k;}
+    updateDots();
+    errorEl.textContent='';
+    if(pinVal.length===4)setTimeout(submitPin,100);
+  }
+
+  const numpad=div({style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,maxWidth:240,margin:'0 auto'}},[
+    ...[1,2,3,4,5,6,7,8,9,'',0,'del'].map(k=>
+      k===''?div({},[]):
+      btn({style:{
+        padding:'16px',fontSize:k==='del'?18:20,fontWeight:600,
+        background:'white',border:'1px solid var(--border)',
+        borderRadius:'var(--r12)',cursor:'pointer',
+        boxShadow:'var(--s1)',transition:'background .1s',
+        color:k==='del'?'#ef4444':'var(--text1)'
+      },onClick:()=>pressKey(String(k))},
+      [k==='del'?'⌫':String(k)])
+    )
+  ]);
+
+  // User list
+  const noUsers=users.length===0;
+
+  // First run: auto-show create admin form
+  if(noUsers){
+    // Show create first admin
+    setTimeout(()=>renderFirstRunSetup(),0);
+  }
+
+  const userList=noUsers?
+    div({style:{textAlign:'center',color:'var(--text3)',fontSize:13,padding:'12px 0'}},['Đang thiết lập...']):
+    div({style:{display:'flex',flexDirection:'column',gap:6,marginBottom:16}},
+      users.map(u=>{
+        const uBtn=btn({style:{
+          padding:'10px 14px',borderRadius:'var(--r8)',border:'2px solid var(--border)',
+          background:'white',cursor:'pointer',display:'flex',alignItems:'center',gap:10,
+          transition:'all .1s',textAlign:'left',
+        },onClick:()=>{
+          selectedUser=u;
+          document.querySelectorAll('.user-btn').forEach(b=>Object.assign(b.style,{borderColor:'var(--border)',background:'white'}));
+          Object.assign(uBtn.style,{borderColor:'var(--accent)',background:'var(--accent-bg)'});
+          pinVal='';updateDots();errorEl.textContent='';
+        }},
+        [
+          div({style:{width:36,height:36,borderRadius:'50%',background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontWeight:700,fontSize:15,flexShrink:0}},[u.name[0].toUpperCase()]),
+          div({},[
+            div({style:{fontWeight:600,fontSize:14,color:'var(--text1)'}},[u.name]),
+            div({style:{fontSize:12,color:'var(--text3)'}},[u.role==='admin'?'👑 Admin':'👤 Thành viên']),
+          ]),
+        ]);
+        uBtn.className='user-btn';
+        return uBtn;
+      })
+    );
+
+  app.appendChild(div({style:{
+    minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
+    background:'var(--bg)',padding:20
+  }},[
+    div({style:{
+      background:'white',borderRadius:'var(--r16)',padding:'32px 28px',
+      boxShadow:'0 8px 32px rgba(0,0,0,.12)',width:'100%',maxWidth:360
+    }},[
+      // Logo
+      div({style:{textAlign:'center',marginBottom:24}},[
+        div({style:{width:56,height:56,borderRadius:16,background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 12px',color:'white',fontWeight:800,fontSize:22}},['TT']),
+        div({style:{fontWeight:700,fontSize:20,color:'var(--text1)'}},[' Task Tracker AI']),
+        div({style:{fontSize:13,color:'var(--text3)',marginTop:4}},['Chọn tên và nhập PIN']),
+      ]),
+      userList,
+      noUsers?null:div({},[
+        div({style:{display:'flex',justifyContent:'center'}},[pinDots()]),
+        errorEl,
+        numpad,
+      ]),
+    ])
+  ]));
+}
+
 function render(){
+  // Show login if no valid session
+  if(!S.currentUser||!isSessionValid()){
+    renderLoginScreen();
+    return;
+  }
+  extendSession(); // renew session on activity
   const app=document.getElementById('app');
   app.innerHTML='';
   if(S.loading){
@@ -2230,6 +2490,7 @@ function render(){
         div({style:{width:30,height:30,background:'var(--text1)',borderRadius:'var(--r8)',display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontWeight:700,fontSize:11,flexShrink:0,letterSpacing:'.02em'}},['TT']),
         div({style:{minWidth:0}},[
           div({style:{fontWeight:700,fontSize:14,color:'var(--text1)',letterSpacing:'-.02em',lineHeight:1.2}},['Task Tracker AI']),
+          S.currentUser?div({style:{fontSize:11,color:'var(--text3)',lineHeight:1.2}},['👤 '+S.currentUser.name]):null,
         ]),
         div({style:{display:'flex',gap:2,marginLeft:mobile?4:8,background:'var(--bg)',borderRadius:'var(--r8)',padding:3,border:'1px solid var(--border)'}},[
           btn({style:{padding:mobile?'5px 8px':'5px 12px',borderRadius:6,border:'none',fontSize:mobile?11:12,fontWeight:600,background:S.activeView==='tasks'?'white':'transparent',color:S.activeView==='tasks'?'var(--text1)':'var(--text3)',boxShadow:S.activeView==='tasks'?'var(--s1)':'none',cursor:'pointer'},onClick:()=>setState({activeView:'tasks'})},[mobile?'📋':'📋 Tasks']),
