@@ -2534,6 +2534,11 @@ async function renderLoginScreen(){
 }
 
 function render(){
+  // Auth check — nếu chưa login thì không render app
+  if(!S.loading&&(!S.currentUser||!isSessionValid())){
+    renderLoginScreen();
+    return;
+  }
   const app=document.getElementById('app');
   app.innerHTML='';
   if(S.loading){
