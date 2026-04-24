@@ -1523,7 +1523,7 @@ async function init(){
     // First time on this device & no sync config — show welcome/connect screen
     setTimeout(()=>setState({modal:'welcome'}),300);
   }
-  startBotPolling();
+  // startBotPolling() — đã chuyển sang Worker, tắt ở browser
   startDeadlineReminder();
   // Auto-pull thông minh mỗi 8s — chỉ pull khi cloud mới hơn local
   setInterval(()=>{ syncPullIfNewer().catch(()=>{}); }, 8000);
@@ -2521,12 +2521,6 @@ async function renderLoginScreen(){
 }
 
 function render(){
-  // Show login if no valid session
-  if(!S.currentUser||!isSessionValid()){
-    renderLoginScreen(); // async - runs independently
-    return;
-  }
-  extendSession(); // renew session on activity
   const app=document.getElementById('app');
   app.innerHTML='';
   if(S.loading){
