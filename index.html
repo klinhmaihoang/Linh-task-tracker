@@ -2172,7 +2172,7 @@ function renderCatPanel(onClose){
     div({style:{display:'flex',gap:6}},[
       btn({style:{background:'#f3f4f6',border:'none',borderRadius:6,width:30,height:30,fontSize:14,color:'#6b7280',display:'flex',alignItems:'center',justifyContent:'center'},onClick:()=>openManageCats()},['⚙']),
       S.currentUser?.role==='admin'?btn({style:{background:'#f3f4f6',border:'none',borderRadius:6,padding:'4px 8px',cursor:'pointer',fontSize:12,color:'var(--text2)'},onClick:()=>openUserManageModal()},['👥']):null,
-      btn({style:{background:'#f3f4f6',border:'none',borderRadius:6,padding:'4px 8px',cursor:'pointer',fontSize:11,color:'#ef4444'},onClick:()=>{if(confirm('Đăng xuất?')){clearCurrentUser();S.currentUser=null;_showingLogin=false;render();}}},['↩']),
+      btn({style:{background:'#f3f4f6',border:'none',borderRadius:6,padding:'4px 8px',cursor:'pointer',fontSize:11,color:'#ef4444'},onClick:()=>{if(confirm('Đăng xuất?')){clearCurrentUser();S.currentUser=null;showLoginScreen(getUsers());}}},['↩']),
       onClose?btn({style:{background:'#f3f4f6',border:'none',borderRadius:6,width:30,height:30,fontSize:18,color:'#6b7280',display:'flex',alignItems:'center',justifyContent:'center'},onClick:onClose},['×']):null,
     ]),
   ]);
@@ -2366,70 +2366,18 @@ function renderFirstRunSetup(){
   ]));
 }
 
-async function renderLoginScreen(){
+function showLoginScreen(users){
+  // Sync render - không fetch gì cả
   const app=document.getElementById('app');
   app.innerHTML='';
-  // Pull users từ cloud nếu có config, không thì dùng local ngay
-  const cfg=getSyncCfg();
-  let users=getUsers();
-  if(cfg&&cfg.workerUrl){
-    app.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',flexDirection:'column',gap:12}},[
-      div({style:{width:32,height:32,border:'3px solid #e5e7eb',borderTopColor:'var(--accent)',borderRadius:'50%',animation:'spin .8s linear infinite'}},[]),
-      div({style:{fontSize:13,color:'var(--text3)'}},[' Đang tải...']),
-    ]));
-    const cloudUsers=await getUsersFromCloud().catch(()=>null);
-    if(cloudUsers&&cloudUsers.length>0)users=cloudUsers;
-  } else if(!cfg||!cfg.workerUrl){
-    // Chưa có Worker URL — hỏi user nhập để kết nối
-    const urlInp=inp({className:'input',placeholder:'https://sepay-webhook.xxx.workers.dev',style:{marginBottom:8,fontFamily:'monospace',fontSize:12}});
-    const errEl=div({style:{color:'#ef4444',fontSize:12,minHeight:16,marginBottom:8}},[]);
-    const connectBtn=btn({className:'btn btn-primary',style:{width:'100%'},onClick:async()=>{
-      const url=urlInp.value.trim().replace(/\/$/,'');
-      if(!url.startsWith('https://')){errEl.textContent='Nhập URL đúng định dạng!';return;}
-      connectBtn.disabled=true;connectBtn.textContent='Đang kết nối...';
-      try{
-        const res=await fetch(url+'/users');
-        if(!res.ok)throw new Error('Không kết nối được');
-        const data=await res.json();
-        lsSet('tt_sync_cfg',{workerUrl:url});
-        if(Array.isArray(data.users)&&data.users.length>0){
-          lsSet('tt_users',data.users);
-          renderLoginScreen();
-        } else {
-          errEl.textContent='Không tìm thấy tài khoản nào trên server.';
-          connectBtn.disabled=false;connectBtn.textContent='Kết nối';
-        }
-      }catch(e){
-        errEl.textContent='Lỗi: '+e.message;
-        connectBtn.disabled=false;connectBtn.textContent='Kết nối';
-      }
-    }},['Kết nối & Tải tài khoản']);
-    app.innerHTML='';
-    app.appendChild(div({style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg)',padding:20}},[
-      div({style:{background:'white',borderRadius:'var(--r16)',padding:'32px 28px',boxShadow:'0 8px 32px rgba(0,0,0,.12)',width:'100%',maxWidth:360}},[
-        div({style:{textAlign:'center',marginBottom:24}},[
-          div({style:{width:56,height:56,borderRadius:16,background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 12px',color:'white',fontWeight:800,fontSize:22}},['TT']),
-          div({style:{fontWeight:700,fontSize:18,color:'var(--text1)'}},[' Kết nối thiết bị']),
-          div({style:{fontSize:13,color:'var(--text3)',marginTop:4}},['Nhập Worker URL để đồng bộ tài khoản']),
-        ]),
-        div({style:{fontSize:12,color:'var(--text2)',marginBottom:8}},['Worker URL:']),
-        urlInp,errEl,connectBtn,
-      ])
-    ]));
-    return;
-  }
+
+  const noUsers=users.length===0;
+  if(noUsers){setTimeout(()=>renderFirstRunSetup(),0);return;}
+
   let selectedUser=null;
-
-  const pinDots=()=>div({style:{display:'flex',gap:10,justifyContent:'center',margin:'16px 0'}},
-    Array.from({length:4},(_,i)=>div({id:'dot_'+i,style:{
-      width:14,height:14,borderRadius:'50%',
-      background:pinVal.length>i?'var(--accent)':'#e5e7eb',
-      transition:'background .1s'
-    }},[]))
-  );
-
   let pinVal='';
-  const errorEl=div({style:{color:'#ef4444',fontSize:13,textAlign:'center',minHeight:20,marginBottom:4}},[]);
+  const errorEl=document.createElement('div');
+  errorEl.style.cssText='color:#ef4444;font-size:13px;text-align:center;min-height:20px;margin-bottom:4px';
 
   function updateDots(){
     for(let i=0;i<4;i++){
@@ -2444,12 +2392,12 @@ async function renderLoginScreen(){
     const hashed=await hashPin(pinVal);
     if(hashed!==selectedUser.pinHash){
       errorEl.textContent='PIN không đúng!';
-      pinVal='';updateDots();
-      return;
+      pinVal='';updateDots();return;
     }
     saveCurrentUser(selectedUser);
     extendSession();
-    setState({currentUser:selectedUser});
+    S.currentUser=selectedUser;
+    render();
   }
 
   function pressKey(k){
@@ -2460,89 +2408,84 @@ async function renderLoginScreen(){
     if(pinVal.length===4)setTimeout(submitPin,100);
   }
 
-  const numpad=div({style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,maxWidth:240,margin:'0 auto'}},[
-    ...[1,2,3,4,5,6,7,8,9,'',0,'del'].map(k=>
-      k===''?div({},[]):
-      btn({style:{
-        padding:'16px',fontSize:k==='del'?18:20,fontWeight:600,
-        background:'white',border:'1px solid var(--border)',
-        borderRadius:'var(--r12)',cursor:'pointer',
-        boxShadow:'var(--s1)',transition:'background .1s',
-        color:k==='del'?'#ef4444':'var(--text1)'
-      },onClick:()=>pressKey(String(k))},
-      [k==='del'?'⌫':String(k)])
-    )
-  ]);
-
-  // User list
-  const noUsers=users.length===0;
-
-  // First run: auto-show create admin form
-  if(noUsers){
-    // Show create first admin
-    setTimeout(()=>renderFirstRunSetup(),0);
+  // Dots
+  const dotsRow=document.createElement('div');
+  dotsRow.style.cssText='display:flex;gap:10px;justify-content:center;margin:16px 0';
+  for(let i=0;i<4;i++){
+    const d=document.createElement('div');
+    d.id='dot_'+i;
+    d.style.cssText='width:14px;height:14px;border-radius:50%;background:#e5e7eb;transition:background .1s';
+    dotsRow.appendChild(d);
   }
 
-  const userList=noUsers?
-    div({style:{textAlign:'center',color:'var(--text3)',fontSize:13,padding:'12px 0'}},['Đang thiết lập...']):
-    div({style:{display:'flex',flexDirection:'column',gap:6,marginBottom:16}},
-      users.map(u=>{
-        const uBtn=btn({style:{
-          padding:'10px 14px',borderRadius:'var(--r8)',border:'2px solid var(--border)',
-          background:'white',cursor:'pointer',display:'flex',alignItems:'center',gap:10,
-          transition:'all .1s',textAlign:'left',
-        },onClick:()=>{
-          selectedUser=u;
-          document.querySelectorAll('.user-btn').forEach(b=>Object.assign(b.style,{borderColor:'var(--border)',background:'white'}));
-          Object.assign(uBtn.style,{borderColor:'var(--accent)',background:'var(--accent-bg)'});
-          pinVal='';updateDots();errorEl.textContent='';
-        }},
-        [
-          div({style:{width:36,height:36,borderRadius:'50%',background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontWeight:700,fontSize:15,flexShrink:0}},[u.name[0].toUpperCase()]),
-          div({},[
-            div({style:{fontWeight:600,fontSize:14,color:'var(--text1)'}},[u.name]),
-            div({style:{fontSize:12,color:'var(--text3)'}},[u.role==='admin'?'👑 Admin':'👤 Thành viên']),
-          ]),
-        ]);
-        uBtn.className='user-btn';
-        return uBtn;
-      })
-    );
+  // Numpad
+  const numpad=document.createElement('div');
+  numpad.style.cssText='display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:240px;margin:0 auto';
+  [1,2,3,4,5,6,7,8,9,'',0,'del'].forEach(k=>{
+    if(k===''){numpad.appendChild(document.createElement('div'));return;}
+    const b=document.createElement('button');
+    b.textContent=k==='del'?'⌫':String(k);
+    b.style.cssText=`padding:16px;font-size:${k==='del'?18:20}px;font-weight:600;background:white;border:1px solid var(--border);border-radius:var(--r12);cursor:pointer;box-shadow:var(--s1);color:${k==='del'?'#ef4444':'var(--text1)'}`;
+    b.onclick=()=>pressKey(String(k));
+    numpad.appendChild(b);
+  });
 
-  app.appendChild(div({style:{
-    minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
-    background:'var(--bg)',padding:20
-  }},[
-    div({style:{
-      background:'white',borderRadius:'var(--r16)',padding:'32px 28px',
-      boxShadow:'0 8px 32px rgba(0,0,0,.12)',width:'100%',maxWidth:360
-    }},[
-      // Logo
-      div({style:{textAlign:'center',marginBottom:24}},[
-        div({style:{width:56,height:56,borderRadius:16,background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 12px',color:'white',fontWeight:800,fontSize:22}},['TT']),
-        div({style:{fontWeight:700,fontSize:20,color:'var(--text1)'}},[' Task Tracker AI']),
-        div({style:{fontSize:13,color:'var(--text3)',marginTop:4}},['Chọn tên và nhập PIN']),
-      ]),
-      userList,
-      noUsers?null:div({},[
-        div({style:{display:'flex',justifyContent:'center'}},[pinDots()]),
-        errorEl,
-        numpad,
-      ]),
-    ])
-  ]));
+  // User list
+  const userList=document.createElement('div');
+  userList.style.cssText='display:flex;flex-direction:column;gap:6px;margin-bottom:16px';
+  users.forEach(u=>{
+    const ub=document.createElement('button');
+    ub.className='user-btn';
+    ub.style.cssText='padding:10px 14px;border-radius:var(--r8);border:2px solid var(--border);background:white;cursor:pointer;display:flex;align-items:center;gap:10px;transition:all .1s;text-align:left;width:100%';
+    const avatar=document.createElement('div');
+    avatar.style.cssText='width:36px;height:36px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:15px;flex-shrink:0';
+    avatar.textContent=u.name[0].toUpperCase();
+    const info=document.createElement('div');
+    info.innerHTML=`<div style="font-weight:600;font-size:14px;color:var(--text1)">${u.name}</div><div style="font-size:12px;color:var(--text3)">${u.role==='admin'?'👑 Admin':'👤 Thành viên'}</div>`;
+    ub.appendChild(avatar);ub.appendChild(info);
+    ub.onclick=()=>{
+      selectedUser=u;
+      document.querySelectorAll('.user-btn').forEach(b=>Object.assign(b.style,{borderColor:'var(--border)',background:'white'}));
+      Object.assign(ub.style,{borderColor:'var(--accent)',background:'var(--accent-bg)'});
+      pinVal='';updateDots();errorEl.textContent='';
+    };
+    userList.appendChild(ub);
+  });
+
+  // Assemble
+  const card=document.createElement('div');
+  card.style.cssText='background:white;border-radius:var(--r16);padding:32px 28px;box-shadow:0 8px 32px rgba(0,0,0,.12);width:100%;max-width:360px';
+  const logo=document.createElement('div');
+  logo.style.cssText='text-align:center;margin-bottom:24px';
+  logo.innerHTML=`<div style="width:56px;height:56px;border-radius:16px;background:var(--accent);display:flex;align-items:center;justify-content:center;margin:0 auto 12px;color:white;font-weight:800;font-size:22px">TT</div><div style="font-weight:700;font-size:20px;color:var(--text1)">Task Tracker AI</div><div style="font-size:13px;color:var(--text3);margin-top:4px">Chọn tên và nhập PIN</div>`;
+  card.appendChild(logo);
+  card.appendChild(userList);
+  card.appendChild(dotsRow);
+  card.appendChild(errorEl);
+  card.appendChild(numpad);
+  const wrap=document.createElement('div');
+  wrap.style.cssText='min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:20px';
+  wrap.appendChild(card);
+  app.appendChild(wrap);
 }
+
+async function renderLoginScreen(){
+  const cfg=getSyncCfg();
+  let users=getUsers();
+  if(cfg&&cfg.workerUrl){
+    const cloudUsers=await getUsersFromCloud().catch(()=>null);
+    if(cloudUsers&&cloudUsers.length>0)users=cloudUsers;
+  }
+  showLoginScreen(users);
+}
+
 
 function render(){
   // Auth check — nếu chưa login thì không render app
   if(!S.loading&&(!S.currentUser||!isSessionValid())){
-    if(!_showingLogin){
-      _showingLogin=true;
-      renderLoginScreen().finally(()=>{_showingLogin=false;});
-    }
+    showLoginScreen(getUsers());
     return;
   }
-  _showingLogin=false;
   const app=document.getElementById('app');
   app.innerHTML='';
   if(S.loading){
