@@ -1226,6 +1226,7 @@ async function syncPush(){
       payments:getPayments(),
       payMembers:getPayMembers(),
       payTgCfg:getPayTgCfg(),
+      users:getUsers(),
       savedAt:new Date().toISOString()
     };
     const res=await fetch(cfg.workerUrl+'/data',{
@@ -1320,6 +1321,8 @@ async function syncPullIfNewer(){
     }
     if(Array.isArray(data.payMembers))lsSet('tt_pay_members',data.payMembers);
     if(data.payTgCfg&&data.payTgCfg.token)lsSet('tt_pay_tg_cfg',data.payTgCfg);
+    // Sync users nếu cloud có
+    if(Array.isArray(data.users)&&data.users.length>0){lsSet('tt_users',data.users);}
     lsSet('tt_sync_lastpull',cloudSavedAt);
     // ✅ FIX: render lại UI sau khi pull để phản ánh data mới
     setState({
@@ -2200,7 +2203,18 @@ async function hashPin(pin){
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 function getUsers(){return lsGet('tt_users')||[];}
-function saveUsers(u){lsSet('tt_users',u);}
+async function getUsersFromCloud(){try{const cfg=getSyncCfg();if(!cfg||!cfg.workerUrl)return null;const res=await fetch(cfg.workerUrl+'/users');if(!res.ok)return null;const data=await res.json();if(Array.isArray(data.users)){lsSet('tt_users',data.users);return data.users;}return null;}catch{return null;}}
+function saveUsers(u){
+  lsSet('tt_users',u);
+  // Sync users lên cloud ngay lập tức
+  const cfg=getSyncCfg();
+  if(cfg&&cfg.workerUrl){
+    const data=lsGet('tt_sync_cache')||{};
+    data.users=u;
+    data.savedAt=new Date().toISOString();
+    fetch(cfg.workerUrl+'/users',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({users:u})}).catch(()=>{});
+  }
+}
 function getCurrentUser(){return lsGet('tt_current_user');}
 function saveCurrentUser(u){lsSet('tt_current_user',u);}
 function clearCurrentUser(){localStorage.removeItem('tt_current_user');localStorage.removeItem('tt_session_exp');}
@@ -2325,10 +2339,17 @@ function renderFirstRunSetup(){
   ]));
 }
 
-function renderLoginScreen(){
+async function renderLoginScreen(){
   const app=document.getElementById('app');
   app.innerHTML='';
-  const users=getUsers();
+  // Hiển thị loading nhỏ
+  app.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',flexDirection:'column',gap:12}},[
+    div({style:{width:32,height:32,border:'3px solid #e5e7eb',borderTopColor:'var(--accent)',borderRadius:'50%',animation:'spin .8s linear infinite'}},[]),
+    div({style:{fontSize:13,color:'var(--text3)'}},[' Đang tải...']),
+  ]));
+  // Pull users từ cloud
+  const cloudUsers=await getUsersFromCloud().catch(()=>null);
+  const users=cloudUsers||getUsers();
   let selectedUser=null;
 
   const pinDots=()=>div({style:{display:'flex',gap:10,justifyContent:'center',margin:'16px 0'}},
