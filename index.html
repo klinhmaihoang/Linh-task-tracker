@@ -290,10 +290,19 @@ function saveCats(nc){setState({categories:nc});lsSet('tt_categories',nc);schedu
 function getPayments(){return lsGet('tt_payments')||[];}
 function savePayments(list){
   lsSet('tt_payments',list);
-  // Lưu timestamp xóa để syncPullIfNewer không restore lại
   lsSet('tt_payments_updated',Date.now());
   scheduleSyncPush();
   render();
+}
+
+async function deletePaymentById(id){
+  // Xóa khỏi local
+  savePayments(getPayments().filter(p=>p.id!==id));
+  // Xóa khỏi D1
+  const cfg=getSyncCfg();
+  if(cfg&&cfg.workerUrl){
+    fetch(cfg.workerUrl+'/payment/'+id,{method:'DELETE'}).catch(()=>{});
+  }
 }
 function genPaymentCode(){return 'PT'+Date.now().toString(36).toUpperCase().slice(-6);}
 function getPayTgCfg(){return lsGet('tt_pay_tg_cfg')||{token:'',chatId:''};}
@@ -3906,7 +3915,8 @@ function renderPaymentsView(mobile){
     bulkBar.appendChild(span({style:{fontSize:13,fontWeight:600,color:'#DC2626',flex:1}},['Đã chọn '+n+' đề xuất']));
     bulkBar.appendChild(btn({className:'btn btn-danger',style:{fontSize:12},onClick:()=>{
       if(!confirm('Xóa '+n+' đề xuất đã chọn?'))return;
-      savePayments(getPayments().filter(p=>!selectedIds.has(p.id)));
+      const toDelete=[...selectedIds];
+      toDelete.forEach(id=>deletePaymentById(id));
       showToast('🗑 Đã xóa '+n+' đề xuất');
     }},['🗑 Xóa đã chọn']));
     bulkBar.appendChild(btn({className:'btn btn-secondary',style:{fontSize:12},onClick:()=>{
@@ -4196,7 +4206,7 @@ function renderPaymentModal(){
     div({style:{display:'flex',gap:8,paddingTop:'1rem',borderTop:'1px solid var(--border)',flexWrap:'wrap'},'data-footer':'1'},[
       !isNew?btn({className:'btn btn-danger',onClick:()=>{
         if(!confirm('Xóa đề xuất này?'))return;
-        savePayments(getPayments().filter(p=>p.id!==form.id));
+        deletePaymentById(form.id);
         showToast('🗑 Đã xóa đề xuất');
         setState({modal:null,modalData:null});
       }},['Xóa']):null,
