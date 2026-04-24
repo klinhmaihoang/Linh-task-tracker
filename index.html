@@ -2203,7 +2203,21 @@ async function hashPin(pin){
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 function getUsers(){return lsGet('tt_users')||[];}
-async function getUsersFromCloud(){try{const cfg=getSyncCfg();if(!cfg||!cfg.workerUrl)return null;const res=await fetch(cfg.workerUrl+'/users');if(!res.ok)return null;const data=await res.json();if(Array.isArray(data.users)){lsSet('tt_users',data.users);return data.users;}return null;}catch{return null;}}
+async function getUsersFromCloud(){
+  try{
+    const cfg=getSyncCfg();
+    if(!cfg||!cfg.workerUrl)return null;
+    // Timeout 5 giây để tránh treo màn hình loading
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),5000);
+    const res=await fetch(cfg.workerUrl+'/users',{signal:controller.signal});
+    clearTimeout(timer);
+    if(!res.ok)return null;
+    const data=await res.json();
+    if(Array.isArray(data.users)&&data.users.length>0){lsSet('tt_users',data.users);return data.users;}
+    return null;
+  }catch{return null;}
+}
 function saveUsers(u){
   lsSet('tt_users',u);
   // Sync users lên cloud ngay lập tức
@@ -2342,14 +2356,55 @@ function renderFirstRunSetup(){
 async function renderLoginScreen(){
   const app=document.getElementById('app');
   app.innerHTML='';
-  // Hiển thị loading nhỏ
-  app.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',flexDirection:'column',gap:12}},[
-    div({style:{width:32,height:32,border:'3px solid #e5e7eb',borderTopColor:'var(--accent)',borderRadius:'50%',animation:'spin .8s linear infinite'}},[]),
-    div({style:{fontSize:13,color:'var(--text3)'}},[' Đang tải...']),
-  ]));
-  // Pull users từ cloud
-  const cloudUsers=await getUsersFromCloud().catch(()=>null);
-  const users=cloudUsers||getUsers();
+  // Pull users từ cloud nếu có config, không thì dùng local ngay
+  const cfg=getSyncCfg();
+  let users=getUsers();
+  if(cfg&&cfg.workerUrl){
+    app.appendChild(div({style:{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',flexDirection:'column',gap:12}},[
+      div({style:{width:32,height:32,border:'3px solid #e5e7eb',borderTopColor:'var(--accent)',borderRadius:'50%',animation:'spin .8s linear infinite'}},[]),
+      div({style:{fontSize:13,color:'var(--text3)'}},[' Đang tải...']),
+    ]));
+    const cloudUsers=await getUsersFromCloud().catch(()=>null);
+    if(cloudUsers&&cloudUsers.length>0)users=cloudUsers;
+  } else if(!cfg||!cfg.workerUrl){
+    // Chưa có Worker URL — hỏi user nhập để kết nối
+    const urlInp=inp({className:'input',placeholder:'https://sepay-webhook.xxx.workers.dev',style:{marginBottom:8,fontFamily:'monospace',fontSize:12}});
+    const errEl=div({style:{color:'#ef4444',fontSize:12,minHeight:16,marginBottom:8}},[]);
+    const connectBtn=btn({className:'btn btn-primary',style:{width:'100%'},onClick:async()=>{
+      const url=urlInp.value.trim().replace(/\/$/,'');
+      if(!url.startsWith('https://')){errEl.textContent='Nhập URL đúng định dạng!';return;}
+      connectBtn.disabled=true;connectBtn.textContent='Đang kết nối...';
+      try{
+        const res=await fetch(url+'/users');
+        if(!res.ok)throw new Error('Không kết nối được');
+        const data=await res.json();
+        lsSet('tt_sync_cfg',{workerUrl:url});
+        if(Array.isArray(data.users)&&data.users.length>0){
+          lsSet('tt_users',data.users);
+          renderLoginScreen();
+        } else {
+          errEl.textContent='Không tìm thấy tài khoản nào trên server.';
+          connectBtn.disabled=false;connectBtn.textContent='Kết nối';
+        }
+      }catch(e){
+        errEl.textContent='Lỗi: '+e.message;
+        connectBtn.disabled=false;connectBtn.textContent='Kết nối';
+      }
+    }},['Kết nối & Tải tài khoản']);
+    app.innerHTML='';
+    app.appendChild(div({style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg)',padding:20}},[
+      div({style:{background:'white',borderRadius:'var(--r16)',padding:'32px 28px',boxShadow:'0 8px 32px rgba(0,0,0,.12)',width:'100%',maxWidth:360}},[
+        div({style:{textAlign:'center',marginBottom:24}},[
+          div({style:{width:56,height:56,borderRadius:16,background:'var(--accent)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 12px',color:'white',fontWeight:800,fontSize:22}},['TT']),
+          div({style:{fontWeight:700,fontSize:18,color:'var(--text1)'}},[' Kết nối thiết bị']),
+          div({style:{fontSize:13,color:'var(--text3)',marginTop:4}},['Nhập Worker URL để đồng bộ tài khoản']),
+        ]),
+        div({style:{fontSize:12,color:'var(--text2)',marginBottom:8}},['Worker URL:']),
+        urlInp,errEl,connectBtn,
+      ])
+    ]));
+    return;
+  }
   let selectedUser=null;
 
   const pinDots=()=>div({style:{display:'flex',gap:10,justifyContent:'center',margin:'16px 0'}},
@@ -2468,7 +2523,7 @@ async function renderLoginScreen(){
 function render(){
   // Show login if no valid session
   if(!S.currentUser||!isSessionValid()){
-    renderLoginScreen();
+    renderLoginScreen(); // async - runs independently
     return;
   }
   extendSession(); // renew session on activity
