@@ -1507,9 +1507,22 @@ async function init(){
   // If we loaded real data, immediately re-save to refresh localStorage TTL
   if(_t!==null)lsSet('tt_tasks',_t);
   if(_c!==null)lsSet('tt_categories',_c);
+  // Restore session — chỉ restore nếu session còn hạn VÀ user vẫn trong danh sách
+  const _savedUser=getCurrentUser();
+  let _restoredUser=null;
+  if(_savedUser&&isSessionValid()){
+    const _currentUsers=lsGet('tt_users')||[];
+    const _stillExists=_currentUsers.find(u=>u.id===_savedUser.id);
+    if(_stillExists){
+      _restoredUser={..._savedUser,..._stillExists};
+      extendSession();
+    } else {
+      clearCurrentUser();
+    }
+  }
   // Chọn category đầu tiên không có mật khẩu làm mặc định
   const defaultCat=cats.find(c=>!c.passwordHash)||cats[0];
-  setState({tasks,categories:cats,loading:false,selectedCatId:defaultCat?defaultCat.id:null});
+  setState({tasks,categories:cats,loading:false,selectedCatId:defaultCat?defaultCat.id:null,currentUser:_restoredUser});
 
   // Auto-pull khi mở app (chỉ lần đầu, _pendingPush chắc chắn false lúc này)
   const cfg=getSyncCfg();
