@@ -242,7 +242,8 @@ const S={
   modal:null, // null | 'task' | 'settings' | 'manageCats' | 'catEdit' | 'pwd' | 'sync' | 'reminder'
   modalData:null,
   filter:'all',
-  selectedCatId:null, // null = chọn cat đầu tiên sau khi load,
+  selectedCatId:null,
+  filterAssignee:null, // null = tất cả, string = tên nhân viên // null = chọn cat đầu tiên sau khi load,
   currentUser:null, // {id,name,role:'admin'|'member'}
   unlockedCats:new Set(),
   activeCol:'todo',
@@ -1325,6 +1326,18 @@ async function syncPullIfNewer(){
     if(Array.isArray(data.users)&&data.users.length>0){lsSet('tt_users',data.users);}
     lsSet('tt_sync_lastpull',cloudSavedAt);
     // ✅ FIX: render lại UI sau khi pull để phản ánh data mới
+    // Check for new tasks assigned to current user → push notification
+    if(S.currentUser){
+      const prevIds=new Set((S.tasks||[]).map(t=>t.id));
+      const newForMe=(data.tasks||[]).filter(t=>
+        !prevIds.has(t.id)&&
+        t.assignee===S.currentUser.name&&
+        t.status!=='done'
+      );
+      newForMe.forEach(t=>{
+        sendPushNotification('📌 Task mới cho bạn!',t.title+' — '+( t.deadline?'Deadline: '+formatDate(t.deadline):'Không có deadline'),{tag:'task-'+t.id});
+      });
+    }
     setState({
       tasks:S.tasks,
       categories:S.categories,
@@ -1538,6 +1551,8 @@ async function init(){
   }
   // startBotPolling() — đã chuyển sang Worker, tắt ở browser
   startDeadlineReminder();
+  // Đăng ký push notification
+  setupPushNotification();
   // Auto-pull thông minh mỗi 8s — chỉ pull khi cloud mới hơn local
   setInterval(()=>{ syncPullIfNewer().catch(()=>{}); }, 8000);
 
@@ -2253,6 +2268,41 @@ function isSessionValid(){
 function extendSession(){lsSet('tt_session_exp',Date.now()+8*60*60*1000);}
 
 
+
+// ─── Push Notification ────────────────────────────────────────────────────────
+async function setupPushNotification(){
+  if(!('Notification' in window))return;
+  if(Notification.permission==='denied')return;
+  // Request permission nếu chưa có
+  if(Notification.permission==='default'){
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted')return;
+  }
+  // Register service worker
+  if('serviceWorker' in navigator){
+    try{
+      await navigator.serviceWorker.register('sw.js');
+    }catch(e){
+      // Service worker không bắt buộc, dùng native notification thay thế
+    }
+  }
+}
+
+function sendPushNotification(title, body, opts={}){
+  if(!('Notification' in window)||Notification.permission!=='granted')return;
+  try{
+    const n=new Notification(title,{
+      body,
+      icon:'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="%234F46E5"/><text y="22" x="6" font-size="18" fill="white">TT</text></svg>',
+      badge:'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="%234F46E5"/></svg>',
+      tag:opts.tag||'tt-notif',
+      ...opts
+    });
+    n.onclick=()=>{window.focus();n.close();};
+    setTimeout(()=>n.close(),8000);
+  }catch(e){}
+}
+
 // ─── Login Screen ─────────────────────────────────────────────────────────────
 
 // ─── User Management Modal ────────────────────────────────────────────────────
@@ -2672,6 +2722,7 @@ function render(){
   // Filter visible tasks
   let visible=tasks;
   if(S.selectedCatId)visible=visible.filter(t=>t.categoryId===S.selectedCatId);
+  if(S.filterAssignee)visible=visible.filter(t=>t.assignee===S.filterAssignee);
   if(S.filter==='overdue')visible=visible.filter(t=>t.status!=='done'&&diffMins(t.deadline)<0);
   else if(S.filter==='today')visible=visible.filter(t=>t.status!=='done'&&diffDays(t.deadline)===0);
   else if(S.filter==='upcoming')visible=visible.filter(t=>t.status!=='done'&&diffDays(t.deadline)>0&&diffDays(t.deadline)<=3);
@@ -2782,6 +2833,27 @@ function render(){
     if(todayT.length)filters.appendChild(btn({style:{padding:'5px 10px',borderRadius:100,border:'1.5px solid '+(S.filter==='today'?'#f59e0b':'#fcd34d'),background:S.filter==='today'?'#f59e0b':'#fffbe6',color:S.filter==='today'?'white':'#d46b08',fontSize:12,fontWeight:600},onClick:()=>setState({filter:S.filter==='today'?'all':'today'})},['🟡 '+todayT.length+' hôm nay']));
     if(soon.length)filters.appendChild(btn({style:{padding:'5px 10px',borderRadius:100,border:'1.5px solid '+(S.filter==='upcoming'?'#16a34a':'#86efac'),background:S.filter==='upcoming'?'#16a34a':'#f0fdf4',color:S.filter==='upcoming'?'white':'#15803d',fontSize:12,fontWeight:600},onClick:()=>setState({filter:S.filter==='upcoming'?'all':'upcoming'})},['🟢 '+soon.length+' sắp hạn']));
     if(S.filter!=='all')filters.appendChild(btn({style:{padding:'5px 10px',borderRadius:100,border:'1.5px solid #e5e7eb',background:'white',color:'#6b7280',fontSize:12},onClick:()=>setState({filter:'all'})},['✕']));
+
+    // Assignee filter dropdown
+    const assignees=[...new Set((S.tasks||[]).filter(t=>t.assignee).map(t=>t.assignee))].sort();
+    if(assignees.length>1){
+      const assigneeWrap=div({style:{display:'flex',alignItems:'center',gap:6,marginBottom:'.75rem'}});
+      const assigneeSelect=el('select',{
+        style:{padding:'5px 10px',borderRadius:100,border:'1.5px solid '+(S.filterAssignee?'var(--accent)':'#e5e7eb'),background:S.filterAssignee?'var(--accent-bg)':'white',color:S.filterAssignee?'var(--accent)':'var(--text2)',fontSize:12,fontWeight:600,cursor:'pointer',outline:'none'},
+        onChange:(e)=>setState({filterAssignee:e.target.value||null})
+      },[
+        el('option',{value:''},['👤 Tất cả']),
+        ...assignees.map(a=>el('option',{value:a,selected:S.filterAssignee===a},[a])),
+      ]);
+      assigneeWrap.appendChild(assigneeSelect);
+      if(S.filterAssignee){
+        const count=visible.length;
+        assigneeWrap.appendChild(div({style:{fontSize:12,color:'var(--text3)'}},[count+' task']));
+        assigneeWrap.appendChild(btn({style:{padding:'3px 8px',borderRadius:100,border:'1px solid #e5e7eb',background:'white',color:'#6b7280',fontSize:11,cursor:'pointer'},onClick:()=>setState({filterAssignee:null})},['✕ Bỏ lọc']));
+      }
+      main.appendChild(assigneeWrap);
+    }
+
     main.appendChild(filters);
   }
 
