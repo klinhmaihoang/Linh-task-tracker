@@ -1409,21 +1409,11 @@ function showToast(msg,ok=true){
 
 function buildTaskKeyboard(taskId,status,progress,assigneeTgId){
   const rows=[];
-  // Row 1: Accept task — show when todo, use acceptedAt as the real lock flag
-  if(status==='todo'){
-    rows.push([{text:'🙋 ── NHẬN TASK NÀY ──',callback_data:'accept|'+taskId+'|0'}]);
-  }
-  // Row 2: Status buttons
-  rows.push([
-    {text:(status==='inprogress'?'✅ ':'')+'Đang làm',callback_data:'s|'+taskId+'|inprogress'},
-    {text:(status==='done'?'✅ ':'')+'Xong',callback_data:'s|'+taskId+'|done'},
-  ]);
-  // Row 3: Progress
   const pct=progress||0;
-  rows.push([0,25,50,75,100].map(p=>({
-    text:(pct===p?'●':'○')+p+'%',
-    callback_data:'p|'+taskId+'|'+p
-  })));
+  // 3 nút chính: 0% = Chưa làm, 50% = Đang làm, 100% = Hoàn thành
+  rows.push([{text:(pct===0?'✅ ':'')+'0% — Chưa làm',callback_data:'p|'+taskId+'|0'}]);
+  rows.push([{text:(pct>0&&pct<100?'✅ ':'')+'50% — Đang làm',callback_data:'p|'+taskId+'|50'}]);
+  rows.push([{text:(pct===100?'✅ ':'')+'100% — Hoàn thành',callback_data:'p|'+taskId+'|100'}]);
   // Row 4: Note + Feedback
   rows.push([
     {text:'📝 Ghi chú',callback_data:'note|'+taskId+'|0'},
