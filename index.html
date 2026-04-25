@@ -1308,14 +1308,20 @@ async function syncPullIfNewer(){
   // Block nếu đang có data local chưa push (tránh ghi đè)
   if(_pendingPush||_syncTimer)return;
   try{
-    const res=await fetch(cfg.workerUrl+'/data');
+    // Dùng ETag — chỉ pull khi data thực sự thay đổi
+    const lastEtag=lsGet('tt_sync_etag')||'';
+    const headers={'If-None-Match':lastEtag};
+    const res=await fetch(cfg.workerUrl+'/data',{headers});
+    // 304 Not Modified — không có gì mới
+    if(res.status===304)return;
     if(!res.ok)return;
+    // Lưu ETag mới
+    const newEtag=res.headers.get('ETag')||'';
+    if(newEtag)lsSet('tt_sync_etag',newEtag);
     const data=await res.json();
     if(!data)return;
     const cloudSavedAt=data.savedAt?new Date(data.savedAt).getTime():0;
-    // Dùng lastpull riêng — không nhầm với lastpush của thiết bị này
     const lastPull=lsGet('tt_sync_lastpull')||0;
-    // Chỉ pull khi cloud có data mới hơn lần pull trước
     if(cloudSavedAt<=lastPull+1000)return;
     console.log('[sync] cloud newer → pulling all data...');
 
