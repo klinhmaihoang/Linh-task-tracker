@@ -1309,7 +1309,7 @@ async function syncPullIfNewer(){
   if(_pendingPush||_syncTimer)return;
   try{
     // Dùng ETag — chỉ pull khi data thực sự thay đổi
-    const lastEtag=lsGet('tt_sync_etag')||'';
+    const lastEtag=localStorage.getItem('tt_sync_etag')||''; // Read raw
     const headers={'If-None-Match':lastEtag};
     const res=await fetch(cfg.workerUrl+'/data',{headers});
     // 304 Not Modified — không có gì mới
@@ -1317,7 +1317,7 @@ async function syncPullIfNewer(){
     if(!res.ok)return;
     // Lưu ETag mới
     const newEtag=res.headers.get('ETag')||'';
-    if(newEtag)lsSet('tt_sync_etag',newEtag);
+    if(newEtag)localStorage.setItem('tt_sync_etag',newEtag); // Store raw, not JSON
     const data=await res.json();
     if(!data)return;
     const cloudSavedAt=data.savedAt?new Date(data.savedAt).getTime():0;
